@@ -60,6 +60,7 @@ mod component_patch_fixture;
 mod consumable_emission_fixture;
 mod consumable_fixture;
 mod consume_effect_fixture;
+mod context_shapes_fixture;
 mod damage_immunity_fixture;
 mod damage_reduction_fixture;
 mod damage_source_fixture;
@@ -226,6 +227,7 @@ probes! {
     chunk_status_fixture,
     climbing_fixture,
     collision_context_fixture,
+    context_shapes_fixture,
     collision_fixture,
     combat_rules_fixture,
     component_durability_fixture,
