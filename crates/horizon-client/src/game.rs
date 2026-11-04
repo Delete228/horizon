@@ -214,6 +214,7 @@ mod native_entity_refs;
 mod native_explosions;
 mod native_falling;
 mod native_fluid_fixture;
+mod native_fluid_render;
 mod native_hooks;
 mod native_inventories;
 mod native_item_container;
