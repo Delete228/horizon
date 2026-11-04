@@ -9,14 +9,21 @@ import sys
 PRIVATE_ROOTS = {".local", "decompiled", "minecraft", "assets", "run", "logs"}
 PRIVATE_EXTENSIONS = {".jar", ".class", ".jfr", ".hprof", ".java"}
 ORIGINAL_JDK_TOOLS = {"tools/JfrSummary.java", "tests/java/JfrFixture.java"}
+# Authored collectors/fixture declarations only: these invoke the player's private
+# game/dependency bytecode and contain no recovered implementations or resources.
+ORIGINAL_RENDER_ORACLES = {
+    "tools/java/NativeFluidRenderOracle.java",
+    "tools/java/native-fluid-fixtures/net/createmod/catnip/platform/CatnipServices.java",
+    "tools/java/NativeTerrainModelOracle.java",
+}
 # The prepared folder's files in one file (crates/horizon-core/src/prepared_files.rs): Mojang's data.
 PRIVATE_NAMES = {"horizon-data.bin"}
 
 
 def prohibited(path):
     parsed = PurePosixPath(path)
-    # Original JDK-only tools are an exact allowlist; recovered game Java stays private.
-    if path in ORIGINAL_JDK_TOOLS:
+    # Exact authored-tool allowlists; recovered game Java stays private.
+    if path in ORIGINAL_JDK_TOOLS or path in ORIGINAL_RENDER_ORACLES:
         return False
     # Original Horizon mod sources may also be tracked.
     if parsed.suffix == ".java" and path.startswith(("mods/horizon/src/", "mods/horizon-lab/src/")):

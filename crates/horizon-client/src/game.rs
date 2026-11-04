@@ -236,6 +236,7 @@ mod native_quick_move;
 mod native_recipes;
 mod native_server;
 mod native_shaders;
+mod native_terrain_model;
 mod native_ticks;
 mod native_visuals;
 mod native_world_columns;
