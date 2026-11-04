@@ -375,9 +375,7 @@ fn components_tag(s: &Stack, builtin: &Builtin, synced: &Dynamic) -> Option<Tag>
     let mut out = Tag::compound(entries);
     if let Tag::Compound(map) = &mut out {
         for id in &s.removed {
-            if synced.custom_components
-                && let Some(name) = horizon_protocol::item::custom::name(*id)
-            {
+            if let Some(name) = name(*id) {
                 map.insert(
                     format!("!{name}").as_str().into(),
                     Tag::Compound(Default::default()),
@@ -1183,6 +1181,93 @@ mod tests {
             other(&back, "minecraft:custom_model_data"),
             other(&item, "minecraft:custom_model_data")
         );
+    }
+
+    #[test]
+    fn max_stack_size_patch_survives_lan_sync_and_preserves_other_components() {
+        use horizon_protocol::buf::{Reader, Writer};
+        use horizon_protocol::item::Slot;
+        let builtin = Builtin {
+            registries: [
+                (
+                    "minecraft:item".into(),
+                    Ids::from_names(vec!["minecraft:cobblestone".into()]),
+                ),
+                (
+                    "minecraft:data_component_type".into(),
+                    Ids::from_names(vec![
+                        "minecraft:custom_data".into(),
+                        "minecraft:max_stack_size".into(),
+                    ]),
+                ),
+            ]
+            .into(),
+        };
+        let marker = Tag::compound([("belt_probe", Tag::Byte(1))]);
+        // The persistent codec reads each numeric NBT kind through intValue;
+        // its network codec writes the resulting integer, not the NBT kind.
+        for capacity in [
+            Tag::Byte(16),
+            Tag::Short(16),
+            Tag::Int(16),
+            Tag::Long(16),
+            Tag::Long(4_294_967_312),
+            Tag::Float(16.75f32.to_bits()),
+            Tag::Double(16.75f64.to_bits()),
+        ] {
+            let mut item = ItemStack::new("minecraft:cobblestone", 16);
+            item.data_mut()
+                .set_other("minecraft:max_stack_size", Some(capacity.clone()));
+            item.data_mut()
+                .set_other("minecraft:custom_data", Some(marker.clone()));
+            let encoded =
+                crate::lan::guest::stack_to_network(|_| 0, |_, _| None, &Some(item.clone()));
+            let mut writer = Writer::new();
+            Slot::write(&encoded, &mut writer);
+            let decoded = Slot::read(&mut Reader::new(&writer.data)).unwrap().unwrap();
+            assert_eq!(
+                decoded
+                    .added
+                    .iter()
+                    .filter(|(kind, _)| *kind == component::MAX_STACK_SIZE)
+                    .count(),
+                1
+            );
+            let client = from_network(&decoded, &builtin, &Dynamic::default());
+            assert_eq!((&*client.item, client.count), ("minecraft:cobblestone", 16));
+            let data = client.data().unwrap();
+            assert_eq!(data.other("minecraft:max_stack_size"), Some(&Tag::Int(16)));
+            assert_eq!(data.other("minecraft:custom_data"), Some(&marker));
+            assert_eq!(
+                item.data().unwrap().other("minecraft:max_stack_size"),
+                Some(&capacity)
+            );
+        }
+        let mut removed = ItemStack::new("minecraft:cobblestone", 1);
+        removed.data_mut().set_other(
+            "!minecraft:max_stack_size",
+            Some(Tag::Compound(Default::default())),
+        );
+        let encoded = crate::lan::guest::stack_to_network(|_| 0, |_, _| None, &Some(removed));
+        let mut writer = Writer::new();
+        Slot::write(&encoded, &mut writer);
+        let decoded = Slot::read(&mut Reader::new(&writer.data)).unwrap().unwrap();
+        assert_eq!(decoded.removed, [component::MAX_STACK_SIZE]);
+        let client = from_network(&decoded, &builtin, &Dynamic::default());
+        assert!(
+            client
+                .data()
+                .unwrap()
+                .other("!minecraft:max_stack_size")
+                .is_some()
+        );
+        let ordinary = crate::lan::guest::stack_to_network(
+            |_| 0,
+            |_, _| None,
+            &Some(ItemStack::new("minecraft:cobblestone", 64)),
+        )
+        .unwrap();
+        assert!(ordinary.added.is_empty() && ordinary.removed.is_empty());
     }
 
     #[test]

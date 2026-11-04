@@ -887,6 +887,29 @@ fn network_stack(
         ));
     }
     if let Some(d) = s.data() {
+        // MAX_STACK_SIZE.STREAM_CODEC is a VarInt. NbtOps.getNumberValue
+        // supplies Number.intValue for saved numeric component values.
+        if d.other("!minecraft:max_stack_size").is_some() {
+            stack
+                .removed
+                .push(horizon_protocol::item::component::MAX_STACK_SIZE);
+        } else if let Some(size) = d.other("minecraft:max_stack_size").and_then(|tag| {
+            use horizon_world::nbt::Tag;
+            Some(match tag {
+                Tag::Byte(n) => i32::from(*n),
+                Tag::Short(n) => i32::from(*n),
+                Tag::Int(n) => *n,
+                Tag::Long(n) => *n as i32,
+                Tag::Float(bits) => f32::from_bits(*bits) as i32,
+                Tag::Double(bits) => f64::from_bits(*bits) as i32,
+                _ => return None,
+            })
+        }) {
+            stack.added.push((
+                horizon_protocol::item::component::MAX_STACK_SIZE,
+                horizon_protocol::item::Component::Int(size),
+            ));
+        }
         // Unbreakable is a unit component; clients need its presence for the
         // durability bar, tooltip and item model, including in single player.
         if d.other("minecraft:unbreakable").is_some() {
