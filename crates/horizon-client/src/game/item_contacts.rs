@@ -15,22 +15,6 @@ impl Game<'_> {
         entity_boxes: &[Aabb],
         client: bool,
     ) -> (bool, bool) {
-        if horizon_client::mod_api::mods().is_empty() {
-            return (
-                super::entity::tick_item(
-                    item,
-                    &self.world,
-                    self.pack.assets.registry,
-                    self.res.facts(),
-                    self.collision,
-                    &self.res.motion().fluids,
-                    no_physics,
-                    entity_boxes,
-                    Some(self.border.geometry()),
-                ),
-                false,
-            );
-        }
         if item.stack.count == 0 {
             return (false, true);
         }

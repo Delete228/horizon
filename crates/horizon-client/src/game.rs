@@ -149,6 +149,8 @@ mod integrated;
 mod interaction_shapes;
 mod interactions;
 #[cfg(test)]
+mod item_contact_nomods_tests;
+#[cfg(test)]
 mod item_contact_tests;
 mod item_contacts;
 mod item_draw;

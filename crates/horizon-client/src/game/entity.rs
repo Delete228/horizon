@@ -296,6 +296,9 @@ macro_rules! stored_motion {
 /// One `ItemEntity.tick`, with the fluid push and the bubble column decided by
 /// the `Entity` defaults every kind shares: fluids, move, column, settle,
 /// fluids again. Returns false when the item should be removed.
+/// Kept as the unsplit reference for the no-extension movement regression;
+/// the game owner always runs its hookable split tick.
+#[cfg(test)]
 pub(super) fn tick_item(
     item: &mut ItemEntity,
     world: &horizon_client::world::World,

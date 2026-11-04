@@ -4,7 +4,7 @@ use crate::mod_api::{self, Flow, Hooks, Host, ItemAfterVerticalCollisionEvent};
 use horizon_client::{chunk::Chunk, join_seq::Joined};
 use horizon_world::nbt::Tag;
 use std::sync::{
-    Arc, Mutex,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicU8, Ordering},
 };
 
@@ -14,6 +14,44 @@ struct ContactProbe {
     calls: Mutex<Vec<(bool, u32, [i32; 3], [f64; 3], u32)>>,
 }
 struct LaterContact(Arc<Mutex<Vec<u32>>>);
+type RawContact = (Arc<ContactProbe>, Arc<Mutex<Vec<u32>>>);
+static RAW_CONTACT: OnceLock<RawContact> = OnceLock::new();
+
+/// The official-weave dev harness calls this from a raw hook with no globally
+/// installed trait mods. It shares assertions/effects, not registration.
+pub(super) fn raw_contact(
+    game: &mut Game<'_>,
+    dimension: &str,
+    client: bool,
+    entity: u32,
+    state: horizon_world::registry::BlockStateId,
+    block_pos: [i32; 3],
+    item_pos: [f64; 3],
+    stack: &mut ItemStack,
+    discard: &mut bool,
+) {
+    let Some((probe, later)) = RAW_CONTACT.get() else {
+        return;
+    };
+    assert!(mod_api::mods().is_empty());
+    let mut event = ItemAfterVerticalCollisionEvent {
+        dimension,
+        client,
+        entity,
+        state,
+        block_pos,
+        item_pos,
+        stack,
+    };
+    if matches!(
+        probe.item_after_vertical_collision(game, &mut event),
+        Flow::Cancel
+    ) {
+        *discard = true;
+    } else {
+        later.lock().unwrap().push(event.stack.count);
+    }
+}
 impl Hooks for LaterContact {
     fn item_after_vertical_collision(
         &self,
@@ -80,6 +118,7 @@ impl Hooks for Arc<ContactProbe> {
 #[test]
 #[ignore = "private prepared resources; process-wide trait probe, run alone"]
 fn actual_owned_item_contact_stack_discard_world_and_callback_spawns() {
+    let _ = raw_contact; // Also type-checked when the official-weave dev harness is absent.
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -121,14 +160,19 @@ fn actual_owned_item_contact_stack_discard_world_and_callback_spawns() {
     assert!(game.place_state([4, 63, 4], barrel, true).unwrap());
     let probe = Arc::new(ContactProbe::default());
     let later = Arc::new(Mutex::new(Vec::new()));
-    assert!(
-        mod_api::MODS
-            .set(Arc::from(vec![
-                Box::new(probe.clone()) as Box<dyn Hooks>,
-                Box::new(LaterContact(later.clone()))
-            ]))
-            .is_ok()
-    );
+    if std::env::var_os("HORIZON_ITEM_CONTACT_RAW_PROBE").is_some() {
+        assert!(mod_api::mods().is_empty());
+        assert!(RAW_CONTACT.set((probe.clone(), later.clone())).is_ok());
+    } else {
+        assert!(
+            mod_api::MODS
+                .set(Arc::from(vec![
+                    Box::new(probe.clone()) as Box<dyn Hooks>,
+                    Box::new(LaterContact(later.clone()))
+                ]))
+                .is_ok()
+        );
+    }
     let mut input = ItemStack::new("minecraft:iron_ingot", 13);
     input.data_mut().set_other(
         "fixture:opaque",
@@ -151,6 +195,26 @@ fn actual_owned_item_contact_stack_discard_world_and_callback_spawns() {
     assert_eq!(
         probe.calls.lock().unwrap()[0],
         (false, old.id, [4, 63, 4], [4.5, 64.0, 4.5], 13)
+    );
+    // Grounded retries follow actual movement cadence even when a raw hook is
+    // the only subscriber. Keep the entity's ordinary ID/join number intact.
+    let resting = spawn(&mut game);
+    game.dropped[0].position.y = 64.0;
+    game.dropped[0].velocity = Vec3::ZERO;
+    game.dropped[0].on_ground = true;
+    let mut ticks = Vec::new();
+    for tick in 1..=8_u32 {
+        let calls = probe.calls.lock().unwrap().len();
+        game.tick_items();
+        if probe.calls.lock().unwrap().len() > calls {
+            ticks.push(tick);
+        }
+    }
+    assert_eq!(
+        ticks,
+        (1..=8_u32)
+            .filter(|t| t.wrapping_add(resting.id).is_multiple_of(4))
+            .collect::<Vec<_>>()
     );
     probe.mode.store(1, Ordering::Relaxed);
     let old = spawn(&mut game);
@@ -273,4 +337,7 @@ fn actual_owned_item_contact_stack_discard_world_and_callback_spawns() {
         assert!(probe.calls.lock().unwrap().last().unwrap().0);
     }
     server.shutdown();
+    if RAW_CONTACT.get().is_some() {
+        assert!(mod_api::mods().is_empty());
+    }
 }
