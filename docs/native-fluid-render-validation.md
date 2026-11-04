@@ -81,5 +81,14 @@ copy the source algorithm into the expected result. No game assets/classes are b
 - Strict client/render all-target Clippy with warnings denied: pass. After hardening the
   GPU test to require an adapter, render all-target Clippy passes again. Both targeted Metal
   checks require a device and have no successful early-return path.
-- Full `pr_ready` validation is running separately; no full-suite pass is claimed yet.
+- Full `pr_ready --base cd46023a4f5d14ea3423f5344a1b2617c9a0af2d` completed in
+  61 minutes 31 seconds: 3,822 touched-crate tests, documentation tests, public-tree,
+  formatting and strict transitive all-target Clippy passed. Launcher and content-root
+  checks were not selected; vanilla parity was not run because this checkout has no
+  prepared vanilla data. The Python run reported three failures among 634 tests (one
+  skipped): two inherited fluid-capability driver convention failures, corrected in
+  local follow-up `68261dc556e8a2fe572cf26a64d7dcc717be28ed`, and the independently
+  reproduced unchanged-base Darwin installer fixture failure described in
+  `native-fluid-capabilities-validation.md`. The complete aggregate check is not
+  claimed as a pass.
 - Basin cross-client appearance and resource-pack integration: separate native feature check.
