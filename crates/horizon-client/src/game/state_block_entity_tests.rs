@@ -4,7 +4,8 @@
 //! The fixture installs process-wide trait mods, so it deliberately never runs in the ordinary suite.
 use super::{Audio, Game, Options, Progress, Settings, load_resources};
 use crate::mod_api::{
-    self, BlockEntityEvent, BlockEntityFromStateEvent, Hooks, Host, StatefulBlockEntityEvent,
+    self, BlockCloneItemEvent, BlockEntityEvent, BlockEntityFromStateEvent, Hooks, Host,
+    StatefulBlockEntityEvent,
 };
 use horizon_client::{
     chunk::Chunk,
@@ -33,11 +34,35 @@ const ENTITY: &str = "fixture:heater_entity";
 const POS: [i32; 3] = [2, 64, 2];
 const KEY: (i32, i32, i32) = (2, 64, 2);
 struct Factory {
+    full: BlockStateId,
+    other_full: BlockStateId,
     declarations: Arc<AtomicUsize>,
     constructions: Arc<AtomicUsize>,
     fallbacks: Arc<AtomicUsize>,
 }
 impl Hooks for Factory {
+    fn block_clone_item(
+        &self,
+        _: &dyn Host,
+        event: &mut BlockCloneItemEvent<'_>,
+    ) -> Option<horizon_client::items::ItemStack> {
+        use horizon_client::items::ItemStack;
+        let item = match event.block {
+            HEATER if event.state == self.full => HEATER,
+            HEATER => "minecraft:stick",
+            OTHER if event.state == self.other_full => "minecraft:paper",
+            OTHER => return Some(ItemStack::new("minecraft:air", 0)),
+            LEGACY => "fixture:unregistered_item",
+            _ => return None,
+        };
+        assert_eq!(event.pos, POS);
+        let mut stack = ItemStack::new(item, 1);
+        stack.data_mut().set_other(
+            "minecraft:custom_data",
+            Some(Tag::compound([("clone_marker", Tag::Int(41))])),
+        );
+        Some(stack)
+    }
     fn stateful_block_entity(&self, _: &dyn Host, event: &mut StatefulBlockEntityEvent<'_>) {
         if matches!(event.block, HEATER | OTHER) {
             self.declarations.fetch_add(1, Ordering::SeqCst);
@@ -127,7 +152,7 @@ fn actual_state_factory_lifecycle() {
             id: id.into(),
             template: "minecraft:stone".into(),
             state_properties: BTreeMap::from([("filled".into(), StateProperty::Boolean)]),
-            item: true,
+            item: id != OTHER,
             ..Default::default()
         })
         .collect();
@@ -172,6 +197,8 @@ fn actual_state_factory_lifecycle() {
     let constructions = Arc::new(AtomicUsize::new(0));
     let fallbacks = Arc::new(AtomicUsize::new(0));
     let factory = Factory {
+        full,
+        other_full: other,
         declarations: declarations.clone(),
         constructions: constructions.clone(),
         fallbacks: fallbacks.clone(),
@@ -509,6 +536,57 @@ fn actual_state_factory_lifecycle() {
     game.remote.take();
     println!("state factory: actual client sync and replacement attachment lifetime PASS");
     assert!(constructions.load(Ordering::SeqCst) > 8);
+    reset(&mut game);
+    assert!(game.place_state(POS, empty, true).unwrap());
+    let empty_pick = game.picked_stack(POS, false).unwrap();
+    assert_eq!(empty_pick.item.as_ref(), "minecraft:stick");
+    assert!(game.place_state(POS, full, true).unwrap());
+    mark(&mut game);
+    let plain = game.picked_stack(POS, false).unwrap();
+    assert_eq!(plain.item.as_ref(), HEATER);
+    assert!(
+        plain
+            .data()
+            .unwrap()
+            .other("minecraft:block_entity_data")
+            .is_none()
+    );
+    let copied = game.picked_stack(POS, true).unwrap();
+    assert_eq!(copied.item.as_ref(), HEATER);
+    assert_eq!(
+        copied.data().unwrap().other("minecraft:custom_data"),
+        Some(&Tag::compound([("clone_marker", Tag::Int(41))]))
+    );
+    let copied_entity = copied
+        .data()
+        .unwrap()
+        .other("minecraft:block_entity_data")
+        .unwrap();
+    assert_eq!(copied_entity.get("id"), Some(&Tag::String(ENTITY.into())));
+    assert_eq!(copied_entity.get("fuel"), Some(&Tag::Int(617)));
+    assert!(game.place_state(POS, other, true).unwrap());
+    assert_eq!(
+        game.picked_stack(POS, false).unwrap().item.as_ref(),
+        "minecraft:paper"
+    );
+    assert!(game.place_state(POS, state(OTHER, false), true).unwrap());
+    assert!(
+        game.picked_stack(POS, false).is_none(),
+        "explicit empty clone suppresses picking"
+    );
+    assert!(game.place_state(POS, legacy, true).unwrap());
+    assert!(
+        game.picked_stack(POS, false).is_none(),
+        "unknown replacement must not fall back"
+    );
+    assert!(game.place_state(POS, stone, true).unwrap());
+    assert_eq!(
+        game.picked_stack(POS, true).unwrap().item.as_ref(),
+        "minecraft:stone"
+    );
+    println!(
+        "block clone: actual state-dependent items, item:false block, prototype components, Ctrl+Pick data, empty/unknown refusal and vanilla fallback PASS"
+    );
     drop(game);
     std::fs::remove_dir_all(root).unwrap();
 }
