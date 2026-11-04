@@ -871,11 +871,16 @@ impl Game<'_> {
         }
         riders
     }
-    /// The mobs riding entity `id` under `tag`'s `Passengers`, after the
-    /// passengers it kept from loading.
+    /// `Entity.shouldBeSaved`: the mobs riding entity `id` under `tag`'s
+    /// `Passengers`, after the passengers it kept from loading. Discarded
+    /// passengers cannot save even before their list entry is swept.
     pub(super) fn put_mob_passengers(&mut self, tag: &mut Tag, id: u32) {
         let riders: Vec<usize> = (0..self.mobs.len())
-            .filter(|&j| self.mobs[j].extra.mount == Some(id) && self.mobs[j].alive())
+            .filter(|&j| {
+                self.mobs[j].extra.mount == Some(id)
+                    && self.mobs[j].alive()
+                    && !self.mobs[j].removed
+            })
             .collect();
         let riders: Vec<Tag> = riders.into_iter().map(|j| self.mob_tree_nbt(j)).collect();
         add_passengers(tag, riders);
