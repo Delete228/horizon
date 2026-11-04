@@ -39,9 +39,15 @@ def main():
     parser.add_argument('--resources', required=True, type=Path)
     parser.add_argument('--target-dir', required=True, type=Path)
     parser.add_argument('--baseline', help='optional older revision whose trait-only fast path must fail')
+    parser.add_argument('--padding-baseline', action='store_true', help='also prove the old pre-provisioning snapshot emits a spurious change')
+    parser.add_argument('--stage-dir', type=Path, help='reuse an owned official stage to keep Cargo package paths stable')
     args = parser.parse_args()
     work = Path(tempfile.mkdtemp(prefix='item-contact-mixin-', dir=ROOT / '.local'))
     source, mods, stage = (work / name for name in ('source', 'mods', 'stage'))
+    if args.stage_dir:
+        stage = args.stage_dir.resolve()
+        if not stage.is_relative_to(ROOT / '.local') or args.stage_dir.is_symlink():
+            raise ValueError('Use an owned .local stage')
     source.mkdir()
     revision = git('rev-parse', 'HEAD').decode().strip()
     paths = git('ls-files', '--cached', '--others', '--exclude-standard', '-z').decode().split('\0')
@@ -80,6 +86,21 @@ kind = "HEAD"
 helper = "contact.rs"
 bindings = [
 ''' + bindings + '\n]\n')
+    with (bundle / 'horizon-mixin.toml').open('a') as manifest:
+        manifest.write('''
+[[injection]]
+id = "container-change-probe"
+target = "horizon_client::game::machines::Game<'_>::container_changed"
+kind = "HEAD"
+helper = "changed.rs"
+bindings = [{name="pos",ty="(i32,i32,i32)",value="pos"}]
+[[injection]]
+id = "container-tick-probe"
+target = "horizon_client::game::native_hooks::Game<'_>::native_block_entity_tick"
+kind = "HEAD"
+helper = "entity.rs"
+bindings = [{name="entity",ty="&mut crate::containers::ModBlockEntity",value="entity"}]
+''')
     signature = ', '.join(name + ': ' + ty for name, ty, _ in PARAMETERS)
     arguments = ', '.join(name for name, _, _ in PARAMETERS)
     # The woven helper itself contains no cfg: its ordinary module has a test
@@ -91,6 +112,19 @@ bindings = [
         + ' super::item_contact_tests::raw_contact(' + arguments + ');\n}\n'
         + '#[cfg(not(test))]\npub(super) fn contact(' + signature + ') {\n'
         + ' let _ = (' + arguments + ');\n}\n')
+    for name, signature, arguments in [
+        ('changed', 'pos: (i32,i32,i32)', 'pos'),
+        ('tick', 'entity: &mut crate::containers::ModBlockEntity', 'entity'),
+    ]:
+        with (bundle / 'probe.rs').open('a') as probe:
+            probe.write('#[cfg(test)]\npub(super) fn ' + name + '(' + signature + ') {\n'
+                        + ' super::item_contact_tests::raw_container_' + name + '('
+                        + ('[pos.0,pos.1,pos.2]' if name == 'changed' else arguments) + ');\n}\n'
+                        + '#[cfg(not(test))]\npub(super) fn ' + name + '(' + signature + ') {\n'
+                        + ' let _ = (' + arguments + ');\n}\n')
+        helper = 'changed.rs' if name == 'changed' else 'entity.rs'
+        (bundle / helper).write_text('fn raw_container_' + name + '(' + signature + ') {\n'
+                                    + ' crate::game::item_contact_raw_probe::' + name + '(' + arguments + ');\n}\n')
     target = args.target_dir.resolve()
     if not target.is_dir() or target.is_symlink():
         raise ValueError('Use an existing owned Cargo target')
@@ -120,8 +154,25 @@ bindings = [
         if result.returncode != expected:
             raise RuntimeError(name + ' had an unexpected result; inspect ' + str(work))
 
-    run('official-apply', [args.mixins.resolve(), 'apply', '--workspace', source,
-                          '--mods', mods, '--out', stage], ROOT)
+    previous = None
+    if stage.exists():
+        if not (stage / '.horizon-mixins-stage.json').is_file():
+            raise ValueError('Existing stage is not marked by official Mixins')
+        previous = work / 'previous-stage'
+        stage.rename(previous)
+    try:
+        run('official-apply', [args.mixins.resolve(), 'apply', '--workspace', source,
+                              '--mods', mods, '--out', stage], ROOT)
+    except Exception:
+        if previous and not stage.exists():
+            previous.rename(stage)
+        raise
+    if previous:
+        for old in previous.rglob('*'):
+            new = stage / old.relative_to(previous)
+            if old.is_file() and not old.is_symlink() and new.is_file() and old.read_bytes() == new.read_bytes():
+                stat = old.stat()
+                os.utime(new, ns=(stat.st_atime_ns, stat.st_mtime_ns))
     woven = stage / 'crates/horizon-client/src/game/native_hooks.rs'
     assert 'fn raw_item_contact(' in woven.read_text()
     command = ['cargo', 'test', '--offline', '--locked', '-p', 'horizon-client', '--lib', METHOD,
@@ -138,6 +189,22 @@ bindings = [
                 raise RuntimeError('The baseline must fail at a runtime assertion, not compilation')
         finally:
             (stage / CONTACT).write_bytes(candidate)
+    if args.padding_baseline:
+        hooks = woven.read_text()
+        start = hooks.index('pub(super) fn tick_mod_block_entity(')
+        end = hooks.index('pub(super) fn put_back_mod_block_entity(', start)
+        body = hooks[start:end]
+        assert body.count('let items = taken.items.clone();') == 1
+        stale = body.replace('        let items = taken.items.clone();\n', '')
+        anchor = '        let mut taken = std::mem::take(&mut **m);\n'
+        assert stale.count(anchor) == 1
+        stale = stale.replace(anchor, anchor + '        let items = taken.items.clone();\n')
+        woven.write_text(hooks[:start] + stale + hooks[end:])
+        try:
+            run('baseline-empty-padding-change', command, stage, expected=101)
+            assert 'implicit empty slot provisioning is not a contents mutation' in (work / 'baseline-empty-padding-change.log').read_text()
+        finally:
+            woven.write_text(hooks)
     run('actual-raw-game', command, stage)
     report['passed'] = True
     (work / 'result.json').write_text(json.dumps(report, indent=2) + '\n')

@@ -108,3 +108,35 @@ selection. These are one local debug run, not release performance guarantees.
 The new no-mod fixture, enhanced trait fixture, actual woven fixture, and strict
 all-target Clippy for both affected crates pass. The earlier 2,501-test suite and
 vanilla oracles were not repeated for this small owner-path correction.
+
+The container-wrapper follow-up snapshots item contents after provisioning its
+empty native container slots, before the mod callback. This changes no genuine
+item mutation: the previous snapshot treated a fresh empty inventory's implicit
+padding as a contents change. The regression adds normal raw `container_changed`
+and `native_block_entity_tick` probes to the same official weave, with no trait
+mods. Two no-op ticks retain identity, transient data, opaque NBT and empty
+slots without a notification. A later insert/extract pair emits both normal
+notifications, followed by no event on another no-op tick.
+
+```sh
+python3 tools/test_item_contact_mixin.py --mixins PATH_TO_HORIZON_MIXINS \
+  --resources PATH_TO_PREPARED_26_3 --target-dir OWNED_CARGO_TARGET \
+  --stage-dir OWNED_LOCAL_STAGE --padding-baseline
+```
+
+`--padding-baseline` restores only the old snapshot placement in the private
+woven source. It must compile and fail the fresh-padding assertion, then the
+corrected source must pass the same actual Game test. The minimal bare fixture
+uses a synthetic two-slot container binding on a prepared vanilla block; it
+checks the generic wrapper, not a specific machine's inventory schema. The
+separate full Create stage uses its ordinary generated `native_containers()`
+bindings for the real fresh Basin case. Its earlier uncorrected Stage9 failure
+is retained as negative evidence, separate from candidate and later builds.
+
+For this follow-up, the official woven negative/positive Game tests passed with
+an empty trait registry, and bare `horizon-client` plus `horizon-client-lib`
+all-target Clippy passed with `-D warnings` and no exceptions. Formatting and
+the public-tree check passed. The broad test suite and unchanged movement
+oracles above were not repeated for this snapshot-order-only fix. These strict
+results do not apply to the separately injected full Create stage, whose own
+strict log retains the pre-existing mixed-stage diagnostics.

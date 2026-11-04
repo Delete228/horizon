@@ -5,7 +5,7 @@ use horizon_client::{chunk::Chunk, join_seq::Joined};
 use horizon_world::nbt::Tag;
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicU8, Ordering},
+    atomic::{AtomicU8, AtomicU32, Ordering},
 };
 
 #[derive(Default)]
@@ -16,6 +16,23 @@ struct ContactProbe {
 struct LaterContact(Arc<Mutex<Vec<u32>>>);
 type RawContact = (Arc<ContactProbe>, Arc<Mutex<Vec<u32>>>);
 static RAW_CONTACT: OnceLock<RawContact> = OnceLock::new();
+static RAW_CONTAINER_CHANGES: AtomicU32 = AtomicU32::new(0);
+static RAW_CONTAINER_TICK: AtomicU8 = AtomicU8::new(0);
+
+pub(super) fn raw_container_changed(pos: [i32; 3]) {
+    if RAW_CONTACT.get().is_some() && pos == [4, 63, 4] {
+        RAW_CONTAINER_CHANGES.fetch_add(1, Ordering::Relaxed);
+    }
+}
+pub(super) fn raw_container_tick(entity: &mut crate::containers::ModBlockEntity) {
+    if RAW_CONTACT.get().is_some() && entity.id == "fixture:owned_container" {
+        match RAW_CONTAINER_TICK.load(Ordering::Relaxed) {
+            1 => entity.items[0] = Some(ItemStack::new("minecraft:iron_ingot", 1)),
+            2 => entity.items[0] = None,
+            _ => {}
+        }
+    }
+}
 
 /// The official-weave dev harness calls this from a raw hook with no globally
 /// installed trait mods. It shares assertions/effects, not registration.
@@ -119,6 +136,7 @@ impl Hooks for Arc<ContactProbe> {
 #[ignore = "private prepared resources; process-wide trait probe, run alone"]
 fn actual_owned_item_contact_stack_discard_world_and_callback_spawns() {
     let _ = raw_contact; // Also type-checked when the official-weave dev harness is absent.
+    let _ = (raw_container_changed, raw_container_tick);
     let root = PathBuf::from(std::env::var_os("HORIZON_TEST_RESOURCES").unwrap());
     let settings = Settings::default();
     let loaded = load_resources(
@@ -338,6 +356,60 @@ fn actual_owned_item_contact_stack_discard_world_and_callback_spawns() {
     }
     server.shutdown();
     if RAW_CONTACT.get().is_some() {
+        assert!(mod_api::mods().is_empty());
+        // A generic synthetic container binding exercises the actual wrapper;
+        // the full Create acceptance separately uses native_containers().
+        use crate::containers::{ModBlockEntityFields, ModContainer};
+        game.remote = None;
+        game.options.dedicated = Some(Vec::new());
+        game.options.execution_role = execution_role::ExecutionRole::IntegratedServer;
+        game.world.block_entities.set_mod_containers(
+            [(
+                barrel.0,
+                Arc::new(ModContainer {
+                    slots: 2,
+                    faces: std::array::from_fn(|_| vec![0, 1]),
+                    inputs: vec![0, 1],
+                    outputs: vec![0, 1],
+                    menu: None,
+                }),
+            )]
+            .into_iter()
+            .collect(),
+        );
+        let machine = crate::containers::ModBlockEntity::new(ModBlockEntityFields {
+            id: "fixture:owned_container".into(),
+            nbt: [("opaque".into(), Tag::Long(97))].into(),
+            data: vec![7, 9],
+            ..Default::default()
+        });
+        let owner = machine.revision();
+        game.world
+            .block_entities
+            .insert((4, 63, 4), BlockEntity::Mod(Box::new(machine)));
+        RAW_CONTAINER_CHANGES.store(0, Ordering::Relaxed);
+        for _ in 0..2 {
+            game.tick_mod_block_entity((4, 63, 4));
+            assert_eq!(
+                RAW_CONTAINER_CHANGES.load(Ordering::Relaxed),
+                0,
+                "implicit empty slot provisioning is not a contents mutation"
+            );
+        }
+        let BlockEntity::Mod(machine) = &game.world.block_entities[&(4, 63, 4)] else {
+            unreachable!()
+        };
+        assert_eq!(machine.items, vec![None; 2]);
+        assert_eq!(machine.nbt.get(&"opaque".into()), Some(&Tag::Long(97)));
+        assert_eq!(machine.data, vec![7, 9]);
+        assert!(machine.revision().same_entity(owner));
+        // Real insertion and extraction still publish each event, even though
+        // the complete pair has returned the inventory to its empty contents.
+        for (mode, expected) in [(1, 1), (2, 2), (0, 2)] {
+            RAW_CONTAINER_TICK.store(mode, Ordering::Relaxed);
+            game.tick_mod_block_entity((4, 63, 4));
+            assert_eq!(RAW_CONTAINER_CHANGES.load(Ordering::Relaxed), expected);
+        }
         assert!(mod_api::mods().is_empty());
     }
 }
