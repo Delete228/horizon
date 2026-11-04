@@ -441,7 +441,7 @@ impl Game<'_> {
             .collect();
         out.extend(log);
         out.extend(fizzes);
-        for (sound, at, _, _) in self.audio.capture.take().unwrap_or_default() {
+        for (sound, at, _, _, _) in self.audio.capture.take().unwrap_or_default() {
             out.push(format!("S {} {sound}", floor_pos(at)));
         }
         out.extend(used);

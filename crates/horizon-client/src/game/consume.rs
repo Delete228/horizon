@@ -266,7 +266,13 @@ impl EmissionWorld for Emitter<'_, '_> {
         if self.0.lan_acting.is_some() {
             self.0.audio.play_unshared(&sound, at, volume, pitch);
             if let Some(at) = at {
-                self.0.guest_player_sounds.push((sound, at, volume, pitch));
+                self.0.guest_player_sounds.push((
+                    sound,
+                    at,
+                    volume,
+                    pitch,
+                    horizon_client::sound_engine::PLAYERS,
+                ));
             }
         } else {
             self.0.audio.play(&sound, at, volume, pitch);

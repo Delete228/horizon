@@ -3167,7 +3167,7 @@ struct Game<'a> {
     /// `Player.playSound` of the acting guest (event, position, volume,
     /// pitch): `level.playSound(player, ...)` leaves the guest out, whose
     /// own client plays it.
-    guest_player_sounds: Vec<(String, [f64; 3], f32, f32)>,
+    guest_player_sounds: Vec<horizon_client::audio::CapturedSound>,
     /// `broadcastToAdmins` lines a guest's command queued, sent once it
     /// returns: the line, whether operators get it and whether the console
     /// logs it.
@@ -13234,7 +13234,13 @@ impl Game<'_> {
         ];
         if self.lan_acting.is_some() {
             self.audio.play_unshared(&sound, Some(at), 1.0, 1.0);
-            self.guest_player_sounds.push((sound.clone(), at, 1.0, 1.0));
+            self.guest_player_sounds.push((
+                sound.clone(),
+                at,
+                1.0,
+                1.0,
+                horizon_client::sound_engine::PLAYERS,
+            ));
         } else {
             self.audio.play(&sound, Some(at), 1.0, 1.0);
         }

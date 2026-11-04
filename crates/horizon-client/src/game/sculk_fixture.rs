@@ -623,7 +623,7 @@ impl Game<'_> {
                     lines.push(format!("game {rest}"));
                 }
             }
-            for (sound, at, volume, pitch) in
+            for (sound, at, volume, pitch, _) in
                 self.audio.capture.replace(Vec::new()).unwrap_or_default()
             {
                 if CLIENT_SOUNDS.contains(&sound.as_str()) {

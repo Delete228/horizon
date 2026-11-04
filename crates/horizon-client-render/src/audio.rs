@@ -206,6 +206,9 @@ fn attach(mixer: &Mutex<Mixer>, channel: ChannelId, samples: Samples, looping: b
 type Stream = cpal::Stream;
 #[cfg(not(feature = "audio"))]
 type Stream = std::convert::Infallible;
+/// Positional sound queued for guests, including the source resolved at play time.
+pub type CapturedSound = (String, [f64; 3], f32, f32, usize);
+
 pub struct Audio {
     _stream: Option<Stream>,
     device_name: String,
@@ -222,7 +225,7 @@ pub struct Audio {
     source_override: Option<usize>,
     /// Positional sounds played since the last drain, kept while the world
     /// is open to the network so guests hear them too.
-    pub capture: Option<Vec<(String, [f64; 3], f32, f32)>>,
+    pub capture: Option<Vec<CapturedSound>>,
     /// How many times each positional sound played (the control socket's `status`),
     /// with or without an audio device.
     pub heard: std::collections::BTreeMap<String, u32>,
@@ -1258,15 +1261,16 @@ impl Audio {
     /// second) from now: `SoundEngine.playDelayed`.
     pub fn play_after(&mut self, event: &str, at: [f64; 3], volume: f32, pitch: f32, ticks: i32) {
         let seed = self.random.next_long();
+        let resolved = crate::sound_events::normalize(event);
+        let source = self
+            .source_override
+            .unwrap_or_else(|| crate::settings::sound_source(&resolved));
         if let Some(capture) = self.capture.as_mut() {
-            capture.push((event.to_owned(), at, volume, pitch));
+            capture.push((event.to_owned(), at, volume, pitch, source));
         }
         *self.heard.entry(event.to_owned()).or_default() += 1;
         self.sync_volumes();
-        let event = crate::sound_events::normalize(event);
-        let source = self
-            .source_override
-            .unwrap_or_else(|| crate::settings::sound_source(&event));
+        let event = resolved;
         let instance =
             SoundInstance::at(&event, source, volume, pitch, LegacyRandom::new(seed), at);
         let id = self.engine.add(instance, false);
@@ -1307,17 +1311,18 @@ impl Audio {
         pitch: f32,
         seed: i64,
     ) {
+        let resolved = crate::sound_events::normalize(event);
+        let source = self
+            .source_override
+            .unwrap_or_else(|| crate::settings::sound_source(&resolved));
         if let (Some(capture), Some(at)) = (self.capture.as_mut(), at) {
-            capture.push((event.to_owned(), at, volume, pitch));
+            capture.push((event.to_owned(), at, volume, pitch, source));
         }
         if at.is_some() {
             *self.heard.entry(event.to_owned()).or_default() += 1;
         }
         self.sync_volumes();
-        let event = crate::sound_events::normalize(event);
-        let source = self
-            .source_override
-            .unwrap_or_else(|| crate::settings::sound_source(&event));
+        let event = resolved;
         let random = LegacyRandom::new(seed);
         let instance = match at {
             Some(at) => SoundInstance::at(&event, source, volume, pitch, random, at),
@@ -1447,6 +1452,30 @@ impl Sounds for Audio {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_sounds_retain_the_played_source_and_defaults() {
+        let mut audio = Audio::silent(Path::new("/nonexistent/horizon-test-assets"));
+        audio.capture = Some(Vec::new());
+        let at = [1.5, 64.5, -2.5];
+        audio.play_on(4, "minecraft:item.flintandsteel.use", Some(at), 1.0, 0.9);
+        audio.play("minecraft:item.flintandsteel.use", Some(at), 0.5, 1.1);
+        audio.play_seeded("minecraft:entity.blaze.hurt", Some(at), 0.25, 0.75, 123);
+        audio.play_after("block.stone.break", at, 0.75, 0.8, 10);
+        audio.play_unshared("minecraft:item.flintandsteel.use", Some(at), 1.0, 1.0);
+        // A non-positional UI event never joins the world's positional queue.
+        audio.play("minecraft:ui.button.click", None, 1.0, 1.0);
+        let captured = audio.capture.unwrap();
+        assert_eq!(
+            captured,
+            vec![
+                ("minecraft:item.flintandsteel.use".into(), at, 1.0, 0.9, 4),
+                ("minecraft:item.flintandsteel.use".into(), at, 0.5, 1.1, 7),
+                ("minecraft:entity.blaze.hurt".into(), at, 0.25, 0.75, 5),
+                ("block.stone.break".into(), at, 0.75, 0.8, 4),
+            ]
+        );
+    }
 
     #[test]
     fn button_click_uses_vanilla_ui_parameters_without_advancing_world_random() {

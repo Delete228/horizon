@@ -818,14 +818,10 @@ impl Game<'_> {
         for (event, at) in std::mem::replace(&mut self.guest_equipment_breaks, equipment_breaks) {
             host.hub.entity_event(entity_id, event, at);
         }
-        // Player.playSound: everyone near but the guest, in the players' source.
-        let players = horizon_client::settings::SOUND_SOURCES
-            .iter()
-            .position(|s| *s == "player")
-            .unwrap_or(0) as i32;
-        for (name, at, volume, pitch) in std::mem::take(&mut self.guest_player_sounds) {
+        // Player.playSound and captured bucket sounds: everyone near but the guest.
+        for (name, at, volume, pitch, source) in std::mem::take(&mut self.guest_player_sounds) {
             host.hub
-                .sound(&name, at, volume, pitch, players, Some(conn));
+                .sound(&name, at, volume, pitch, source as i32, Some(conn));
         }
         // ServerItemCooldowns.onCooldownStarted: the guest's own cooldown.
         for (group, duration) in std::mem::take(&mut self.guest_cooldowns) {
@@ -5207,9 +5203,9 @@ impl Game<'_> {
                     .iter()
                     .any(|(p, n)| p == at && name.trim_start_matches("minecraft:") == n.as_str());
                 if place {
-                    let (name, at, volume, pitch) = capture.remove(i);
-                    let source = horizon_client::settings::sound_source(&name) as i32;
-                    host.hub.sound(&name, at, volume, pitch, source, Some(conn));
+                    let (name, at, volume, pitch, source) = capture.remove(i);
+                    host.hub
+                        .sound(&name, at, volume, pitch, source as i32, Some(conn));
                 } else {
                     i += 1;
                 }
@@ -5226,9 +5222,9 @@ impl Game<'_> {
             return;
         };
         let sounds: Vec<_> = capture.drain(heard.min(capture.len())..).collect();
-        for (name, at, volume, pitch) in sounds {
-            let source = horizon_client::settings::sound_source(&name) as i32;
-            host.hub.sound(&name, at, volume, pitch, source, Some(conn));
+        for (name, at, volume, pitch, source) in sounds {
+            host.hub
+                .sound(&name, at, volume, pitch, source as i32, Some(conn));
         }
     }
 
@@ -5247,9 +5243,9 @@ impl Game<'_> {
         let mut i = heard.min(capture.len());
         while i < capture.len() {
             if capture[i].0 == horn {
-                let (name, at, volume, pitch) = capture.remove(i);
-                let source = horizon_client::settings::sound_source(&name) as i32;
-                host.hub.sound(&name, at, volume, pitch, source, Some(conn));
+                let (name, at, volume, pitch, source) = capture.remove(i);
+                host.hub
+                    .sound(&name, at, volume, pitch, source as i32, Some(conn));
             } else {
                 i += 1;
             }
@@ -5261,7 +5257,7 @@ impl Game<'_> {
         let sounds = self.audio.capture.take().unwrap_or_default();
         self.audio.capture = Some(Vec::new());
         let blocks: Vec<[f64; 3]> = std::mem::take(&mut host.broken);
-        for (name, at, volume, pitch) in sounds {
+        for (name, at, volume, pitch, source) in sounds {
             // Block breaks are heard through the level event.
             if blocks
                 .iter()
@@ -5269,8 +5265,8 @@ impl Game<'_> {
             {
                 continue;
             }
-            let source = horizon_client::settings::sound_source(&name) as i32;
-            host.hub.sound(&name, at, volume, pitch, source, None);
+            host.hub
+                .sound(&name, at, volume, pitch, source as i32, None);
         }
     }
 
@@ -5661,5 +5657,165 @@ mod spin_target_tests {
             first_spin_target(swept, None, targets[..2].iter().copied()),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod captured_sound_tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "needs prepared resources in HORIZON_TEST_RESOURCES and loopback LAN binding"]
+    fn captured_sound_source_reaches_the_guest_packet_once() {
+        use crate::game::{
+            Audio, Options, Progress, Settings, World, lan::LanSettings, load_resources,
+        };
+        use horizon_client::{
+            chunk::Chunk,
+            lan::{Joined, NetConfig, Out, PlayerSender, guest::Guest, hub::HubConfig},
+        };
+        use std::{
+            path::PathBuf,
+            sync::{Arc, atomic::AtomicI32, mpsc},
+        };
+        let root = PathBuf::from(
+            std::env::var_os("HORIZON_TEST_RESOURCES").expect("prepared resources required"),
+        );
+        let settings = Settings::default();
+        let loaded = load_resources(
+            root.clone(),
+            None,
+            &root,
+            &settings,
+            std::time::Instant::now(),
+            false,
+            true,
+            &Progress::new(),
+            &mut |_, _| unreachable!(),
+        )
+        .unwrap();
+        let mut options = Options::parse(std::iter::empty()).unwrap().unwrap();
+        options.resources = root.clone();
+        options.execution_role = crate::game::execution_role::ExecutionRole::IntegratedServer;
+        let mut game = Game::new(
+            &loaded.resources,
+            loaded.pack,
+            loaded.gui.unwrap(),
+            options,
+            settings,
+            Audio::silent(&root),
+            None,
+        )
+        .unwrap();
+        game.world = World::new(game.res.facts().air, 1);
+        game.world
+            .chunks
+            .insert((0, 0), Arc::new(Chunk::empty(0, 0)));
+        let net = NetConfig {
+            announce: false,
+            bind: Some(std::net::Ipv4Addr::LOCALHOST.into()),
+            ..NetConfig::lan(0, "SoundSourceTest".into(), 2)
+        };
+        game.lan_host(
+            LanSettings {
+                port: 0,
+                guest_commands: false,
+                force_game_mode: false,
+            },
+            net,
+            HubConfig {
+                default_game_mode: 0,
+                guest_commands: false,
+                force_game_mode: false,
+                hardcore: false,
+                view_distance: 2,
+                simulation_distance: 2,
+                dimension: "minecraft:overworld".into(),
+                allow_flight: false,
+                seed: 0,
+                max_players: 20,
+                integrated: false,
+                levels: Default::default(),
+            },
+        )
+        .unwrap();
+        let mut host = game.lan.take().unwrap();
+        let mut receivers = Vec::new();
+        for (conn, name) in [(1, "Actor"), (2, "Observer")] {
+            let (tx, rx) = mpsc::channel();
+            let mut guest = Guest::new(
+                Joined {
+                    conn,
+                    uuid: u128::from(conn),
+                    name: name.into(),
+                    properties: Vec::new(),
+                    info: horizon_protocol::packets::configuration::ClientInformation::new(2),
+                    brand: "vanilla".into(),
+                    sender: PlayerSender::new(tx, Arc::default()),
+                    latency: Arc::new(AtomicI32::new(0)),
+                    address: "127.0.0.1:25565".parse().unwrap(),
+                },
+                conn as i32,
+                [1.5, 64.0, 1.5],
+                2,
+            );
+            guest.placed = true;
+            guest.dimension = "minecraft:overworld".into();
+            host.hub.guests.push(guest);
+            receivers.push(rx);
+        }
+        let packets = |rx: &mpsc::Receiver<Out>| {
+            let mut sounds = Vec::new();
+            while let Ok(Out::Packet(body)) = rx.try_recv() {
+                let mut reader = horizon_protocol::buf::Reader::new(&body);
+                let id = reader.varint().unwrap();
+                if let Ok(C::Sound(sound)) = C::decode(id, reader.rest()) {
+                    sounds.push(sound);
+                }
+            }
+            sounds
+        };
+        let at = [1.5, 64.5, 1.5];
+        let lever = game
+            .pack
+            .assets
+            .registry
+            .default_state("minecraft:lever")
+            .unwrap();
+        game.world.set(1, 64, 1, lever).unwrap();
+        // The actor predicts locally; the host must exclude only that actor.
+        let mut actor = Audio::silent(&root);
+        actor.capture = Some(Vec::new());
+        actor.play_on(4, "minecraft:item.flintandsteel.use", Some(at), 1.0, 0.9);
+        game.audio
+            .play_on(4, "minecraft:item.flintandsteel.use", Some(at), 1.0, 0.9);
+        game.guest_use_sounds(&mut host, 1, 0, 0);
+        assert_eq!(actor.capture.unwrap().len(), 1);
+        assert!(packets(&receivers[0]).is_empty());
+        let observer = packets(&receivers[1]);
+        assert_eq!(observer.len(), 1);
+        assert_eq!(observer[0].source, 4);
+        assert_eq!(observer[0].volume, 1.0);
+        assert_eq!(observer[0].pitch, 0.9);
+        assert!(game.audio.capture.as_ref().unwrap().is_empty());
+        // The ordinary broadcast path also retains sources, including defaults.
+        game.audio
+            .play("minecraft:item.flintandsteel.use", Some(at), 0.5, 1.1);
+        game.audio.play_on(
+            4,
+            "minecraft:entity.generic.extinguish_fire",
+            Some(at),
+            0.5,
+            2.0,
+        );
+        game.lan_broadcast_effects(&mut host);
+        for receiver in &receivers {
+            let sounds = packets(receiver);
+            assert_eq!(sounds.iter().map(|s| s.source).collect::<Vec<_>>(), [7, 4]);
+            assert_eq!(
+                sounds.iter().map(|s| s.volume).collect::<Vec<_>>(),
+                [0.5, 0.5]
+            );
+        }
     }
 }
