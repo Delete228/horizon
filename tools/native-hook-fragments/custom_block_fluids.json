@@ -1,0 +1,57 @@
+{
+  "hooks": [
+    {
+      "name": "custom_block_fluids",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_block_fluids",
+      "mod_api": {
+        "contract": "listen"
+      }
+    },
+    {
+      "name": "custom_fluid_tanks",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_fluid_tanks",
+      "mod_api": {
+        "contract": "replace",
+        "out": "out"
+      }
+    },
+    {
+      "name": "custom_fluid_fill",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_fluid_fill",
+      "mod_api": {
+        "contract": "replace",
+        "out": "out"
+      }
+    },
+    {
+      "name": "custom_fluid_drain",
+      "target": "horizon_client::game::native_hooks::Game<'_>::native_custom_fluid_drain",
+      "mod_api": {
+        "contract": "replace",
+        "out": "out"
+      }
+    }
+  ],
+  "helpers": [
+    {
+      "name": "fluid_view",
+      "target": "horizon_client::game::machines::native_fluids::Game<'_>::native_fluid_view",
+      "mod_api": {}
+    },
+    {
+      "name": "fluid_fill_stack",
+      "target": "horizon_client::game::machines::native_fluids::Game<'_>::native_fluid_fill_stack",
+      "mod_api": {}
+    },
+    {
+      "name": "fluid_drain_stack",
+      "target": "horizon_client::game::machines::native_fluids::Game<'_>::native_fluid_drain_stack",
+      "mod_api": {}
+    }
+  ],
+  "rust_summary": "owned component-preserving custom block-fluid capabilities.",
+  "doc_summary": "`native_custom_block_fluids` opts a block into canonical custom fluid storage; owned stack/view/fill/drain helpers preserve complete component patches. Bundles need \"hooks\": @API:custom_block_fluids@.",
+  "comments": [
+    "crates/horizon-client/src/game/machines/native_fluids.rs"
+  ]
+}

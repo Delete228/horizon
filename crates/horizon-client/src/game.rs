@@ -213,6 +213,7 @@ mod native_entity_motion;
 mod native_entity_refs;
 mod native_explosions;
 mod native_falling;
+mod native_fluid_fixture;
 mod native_hooks;
 mod native_inventories;
 mod native_item_container;
@@ -20897,6 +20898,10 @@ fn start_game<'a>(
     }
     if let Ok(spec) = std::env::var("HORIZON_DISPENSE_FIXTURE") {
         game.run_component_harness(integrated::ComponentHarness::Dispenser(spec))?;
+        return Ok(None);
+    }
+    if let Ok(output) = std::env::var("HORIZON_NATIVE_FLUID_FIXTURE") {
+        game.run_component_harness(integrated::ComponentHarness::NativeFluids(output))?;
         return Ok(None);
     }
     if let Ok(spec) = std::env::var("HORIZON_SCULK_FIXTURE") {

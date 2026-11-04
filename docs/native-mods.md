@@ -756,6 +756,40 @@ fills (first into tanks holding the same fluid, then into empty ones) and answer
 took; both also work a cauldron, which gives and takes whole thirds of a bucket and never more than was asked (less than its top third gives nothing), a lava one only whole, and powder snow none, as it is no fluid. Water and lava
 (`minecraft:water`, `minecraft:lava`) are the fluids; a tank holds one at a time. Bundles that use them need `"hooks": 54`.
 
+Custom block-fluid storage (`@API:custom_block_fluids@`, pending catalog allocation) is opt-in and keeps a
+block's existing save format. `native_custom_block_fluids(block, custom)` declares ownership once per mod
+block, compiled into a state-indexed table. Its `native_custom_fluid_tanks`, `native_custom_fluid_fill` and
+`native_custom_fluid_drain` callbacks return owned `NativeFluidTankView` / `NativeFluidStack` values. A stack
+contains its fluid id, millibuckets and the complete NBT component patch, including removed-component keys.
+The first supplied callback response wins. Declared custom ownership **never** falls through to API 54's
+ordinary `fluids` list, even if the callback returns `None`, the side is refused, or the tank is full.
+
+`native_fluid_view(dimension, pos, side)`, `native_fluid_fill_stack(..., resource, action)` (accepted amount)
+and `native_fluid_drain_stack(..., request, action)` only access the loaded, current server dimension and a
+live block entity. `side: None` explicitly means unsided; for ordinary tanks it reaches all declared tanks
+in declaration order. `NativeFluidDrain::Any(max)` lets the provider select its fluid; `Exact(stack)` matches
+both the fluid and its entire component patch. `NativeFluidAction::Simulate` must leave canonical NBT,
+inventory, dirty/sync events and RNG untouched. Execute providers own their canonical writes and normal
+notifications. Nonpositive requests return zero/None without invoking a provider. Invalid responses are
+refused (zero/None), never clamped: fill outside `0..=requested`, drain outside `1..=requested`, a selected
+payload mismatch, or tank content outside its reported capacity. This validates the returned value, not
+actual consumption: arbitrary providers (including ports retaining known source quirks) may change storage
+by a different amount. The boundary neither audits that consumption nor rolls back native side effects.
+The returned stack alone is therefore not a transactional or conservation guarantee.
+
+The new typed helpers also support API 54 ordinary tanks and cauldrons, with read-only simulation. Their
+legacy storage cannot represent fluid components: nonempty patches are refused, never flattened. API 54's
+plain insertion passes an empty patch; its view refuses component-bearing custom contents, and extraction
+simulates first and refuses them before any mutation. The API 54 `ModFluidTanks` fields and ordinary save
+format are unchanged. API 55 `native_move_fluids` refuses **either custom endpoint** without touching it;
+its existing ordinary tank/cauldron receipt rollback cannot safely restore an arbitrary custom provider.
+Custom providers should use the typed operations with a source-appropriate transaction policy instead.
+
+The development component fixture can be run without a renderer using
+`python3 tools/test_native_fluid_capabilities.py --game PATH --resources PATH`. It copies resources into a
+fresh private folder and never opens a save. It exercises the real server Game/chunks/block entities through
+a scoped synthetic provider, while the generated-dispatch tests cover mod response ordering separately.
+
 API 55 adds moving a block's fluids to another block. `native_move_fluids(dimension, from, from_face, to, to_face, max)`
 moves up to `max` millibuckets between two blocks, one fluid, and what the target won't take goes back into the
 source, past the fill sides' leave: the source's tanks just gave the fluid up, so they have the room, and a

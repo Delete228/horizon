@@ -58,6 +58,27 @@ mod tests {
         pub(super) struct ModContainer;
         pub(super) struct MerchantOffer;
         pub(super) struct ModFluidTanks;
+        pub(super) struct NativeFluidStack {
+            pub fluid: String,
+            pub amount: i32,
+            pub components: Compound,
+        }
+        pub(super) struct NativeFluidTankView {
+            pub tank: usize,
+            pub content: Option<NativeFluidStack>,
+            pub capacity: i32,
+            pub can_fill: bool,
+            pub can_drain: bool,
+        }
+        #[derive(Clone, Copy, PartialEq, Eq)]
+        pub(super) enum NativeFluidAction {
+            Simulate,
+            Execute,
+        }
+        pub(super) enum NativeFluidDrain {
+            Any(i32),
+            Exact(NativeFluidStack),
+        }
         pub(super) struct ModEnergyBuffer;
         pub(super) struct LootStack;
         pub(super) struct NativeLootContext<'a>(pub &'a ());
@@ -336,6 +357,85 @@ mod tests {
         // Each call is entered under the hook's name; the cancelled one's is the last.
         let entered = ENTERED.with(|entered| entered.take());
         assert_eq!(entered, [(0, "mouse_button_pre")]);
+    }
+
+    #[test]
+    fn custom_fluid_response_owns_the_result_even_when_it_is_zero() {
+        struct Provider(u32, Arc<Mutex<Vec<u32>>>);
+        impl Hooks for Provider {
+            fn custom_block_fluids(&self, _: &dyn Host, event: &mut CustomBlockFluidsEvent<'_>) {
+                if event.block == "sample:tank" {
+                    event.custom = true;
+                }
+            }
+            fn custom_fluid_fill(
+                &self,
+                _: &mut dyn Host,
+                event: &mut CustomFluidFillEvent<'_>,
+            ) -> Option<i32> {
+                assert_eq!(event.pos, [1, 2, 3]);
+                assert!(event.side.is_none());
+                assert!(event.action == NativeFluidAction::Simulate);
+                assert_eq!(event.resource.fluid, "sample:ink");
+                assert_eq!(event.resource.amount, 500);
+                self.1.lock().unwrap().push(self.0);
+                Some(0)
+            }
+            fn custom_fluid_drain(
+                &self,
+                _: &mut dyn Host,
+                event: &mut CustomFluidDrainEvent<'_>,
+            ) -> Option<NativeFluidStack> {
+                let NativeFluidDrain::Exact(stack) = event.request else {
+                    panic!("selected drain lost");
+                };
+                assert_eq!(stack.fluid, "sample:ink");
+                assert_eq!(stack.amount, 500);
+                self.1.lock().unwrap().push(self.0);
+                Some(NativeFluidStack {
+                    fluid: stack.fluid.clone(),
+                    amount: 250,
+                    components: Compound,
+                })
+            }
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let mods: Vec<Box<dyn Hooks>> = vec![
+            Box::new(Provider(1, calls.clone())),
+            Box::new(Provider(2, calls.clone())),
+        ];
+        let mut custom = false;
+        dispatch_custom_block_fluids(&TestHost, &mods, "sample:tank", &mut custom);
+        assert!(custom);
+        let resource = NativeFluidStack {
+            fluid: "sample:ink".into(),
+            amount: 500,
+            components: Compound,
+        };
+        let mut accepted = None;
+        dispatch_custom_fluid_fill(
+            &mut TestHost,
+            &mods,
+            [1, 2, 3],
+            None,
+            &resource,
+            NativeFluidAction::Simulate,
+            &mut accepted,
+        );
+        assert_eq!(accepted, Some(0));
+        assert_eq!(*calls.lock().unwrap(), [1]);
+        let mut drained = None;
+        dispatch_custom_fluid_drain(
+            &mut TestHost,
+            &mods,
+            [1, 2, 3],
+            None,
+            &NativeFluidDrain::Exact(resource),
+            NativeFluidAction::Execute,
+            &mut drained,
+        );
+        assert_eq!(drained.unwrap().amount, 250);
+        assert_eq!(*calls.lock().unwrap(), [1, 1]);
     }
 
     #[test]
