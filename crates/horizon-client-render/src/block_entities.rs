@@ -77,6 +77,8 @@ pub struct BlockEntities {
     /// The fluid tanks of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_fluids: FxHashMap<u32, Arc<ModFluidTanks>>,
+    /// Opt-in custom fluid ownership by state, separate from API 54 storage.
+    custom_fluids: Vec<bool>,
     /// The energy buffers of mod blocks' block entities, by block state id;
     /// built with `states`, like the containers.
     mod_energy: FxHashMap<u32, Arc<ModEnergyBuffer>>,
@@ -207,6 +209,15 @@ impl BlockEntities {
     /// The fluid tanks of a mod block's block entity in block state `state`.
     pub fn mod_fluids(&self, state: u32) -> Option<&Arc<ModFluidTanks>> {
         self.mod_fluids.get(&state)
+    }
+    pub fn set_custom_fluids(&mut self, states: Vec<bool>) {
+        self.custom_fluids = states;
+    }
+    pub fn custom_fluids(&self, state: u32) -> bool {
+        self.custom_fluids
+            .get(state as usize)
+            .copied()
+            .unwrap_or(false)
     }
     pub fn set_mod_energy(&mut self, energy: FxHashMap<u32, Arc<ModEnergyBuffer>>) {
         self.mod_energy = energy;

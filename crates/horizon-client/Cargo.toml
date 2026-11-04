@@ -142,6 +142,10 @@ path = "tests/launch_api.rs"
 name = "mod_api_hooks"
 path = "tests/mod_api_hooks.rs"
 
+[[test]]
+name = "custom_block_fluids"
+path = "tests/custom_block_fluids.rs"
+
 [build-dependencies]
 horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
 

@@ -884,8 +884,9 @@ use super::{
 };
 use horizon_assets::item_model::StackView;
 use horizon_client::mod_api::{
-    self, NativeCamera, NativeCommand, NativeDispensed, NativeLifecycleContext,
-    NativeNoteBlockChange, NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
+    self, NativeCamera, NativeCommand, NativeDispensed, NativeFluidAction, NativeFluidDrain,
+    NativeFluidStack, NativeFluidTankView, NativeLifecycleContext, NativeNoteBlockChange,
+    NativeServerPlayer, RecipeBookCategory, ServerTickPhase, WorldPhase,
 };
 use horizon_client::mod_api::{AttachmentResult, Attachments, Holder, Suggestion};
 pub(crate) use horizon_client::mod_api::{
@@ -2872,6 +2873,81 @@ impl Game<'_> {
         fluids: &mut Option<ModFluidTanks>,
     ) {
         mod_api::dispatch_block_entity_fluids(self, mod_api::mods(), block, fluids);
+    }
+    /// Opt a mod block into canonical custom fluid storage. Asked once per
+    /// block when state tables are built. True takes precedence over API 54's
+    /// `fluids` storage, even when a runtime callback supplies no response.
+    /// Set custom to true for your block; never clear an earlier declaration.
+    /// @API:custom_block_fluids@
+    pub(super) fn native_custom_block_fluids(&self, block: &str, custom: &mut bool) {
+        if super::native_fluid_fixture::declaration(block, custom) {
+            return;
+        }
+        mod_api::dispatch_custom_block_fluids(self, mod_api::mods(), block, custom);
+    }
+    /// Read the declared custom capability. None side is explicitly unsided.
+    /// The first supplied response owns the result; None never falls through
+    /// to ordinary storage. This callback must be read-only.
+    pub(super) fn native_custom_fluid_tanks(
+        &self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        out: &mut Option<Vec<NativeFluidTankView>>,
+    ) {
+        if super::native_fluid_fixture::view(self, pos, side, out) {
+            return;
+        }
+        mod_api::dispatch_custom_fluid_tanks(self, mod_api::mods(), pos, side, out);
+    }
+    /// Fill the declared custom capability, returning the accepted amount.
+    /// Simulate must not mutate canonical NBT, inventory, dirty/sync state or
+    /// RNG. Execute owns those changes and notifications. Invalid responses
+    /// are refused, but validation cannot audit consumption or roll back a
+    /// provider's storage changes (including intentional source quirks).
+    pub(super) fn native_custom_fluid_fill(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        resource: &NativeFluidStack,
+        action: NativeFluidAction,
+        out: &mut Option<i32>,
+    ) {
+        if super::native_fluid_fixture::fill(self, pos, side, resource, action, out) {
+            return;
+        }
+        mod_api::dispatch_custom_fluid_fill(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            resource,
+            action,
+            out,
+        );
+    }
+    /// Drain the declared custom capability. Exact matches fluid AND its
+    /// complete component patch; Any lets the provider choose. Simulate is
+    /// read-only. Execute owns canonical storage and notifications.
+    pub(super) fn native_custom_fluid_drain(
+        &mut self,
+        pos: [i32; 3],
+        side: Option<Direction>,
+        request: &NativeFluidDrain,
+        action: NativeFluidAction,
+        out: &mut Option<NativeFluidStack>,
+    ) {
+        if super::native_fluid_fixture::drain(self, pos, side, request, action, out) {
+            return;
+        }
+        mod_api::dispatch_custom_fluid_drain(
+            self,
+            mod_api::mods(),
+            pos,
+            side,
+            request,
+            action,
+            out,
+        );
     }
     /// Block `block`'s block entity has an energy buffer
     /// (`Capabilities.Energy.BLOCK`): set `energy` when the block is yours,
@@ -9323,6 +9399,26 @@ impl Game<'_> {
             }
         }
         out
+    }
+    /// Custom fluid ownership, compiled once per block and indexed by state.
+    pub(super) fn native_custom_fluid_states(&self) -> Vec<bool> {
+        let registry = self.pack.assets.registry;
+        let mut by_block: FxHashMap<String, bool> = FxHashMap::default();
+        (0..registry.len() as u32)
+            .map(|i| {
+                let Some(state) = registry.state(horizon_world::registry::BlockStateId(i)) else {
+                    return false;
+                };
+                if state.name.starts_with("minecraft:") {
+                    return false;
+                }
+                *by_block.entry(state.name.clone()).or_insert_with(|| {
+                    let mut custom = false;
+                    self.native_custom_block_fluids(&state.name, &mut custom);
+                    custom
+                })
+            })
+            .collect()
     }
     /// The energy buffers of the mod blocks' block entities, by block state
     /// (`native_block_entity_energy`), checked as the containers are.
