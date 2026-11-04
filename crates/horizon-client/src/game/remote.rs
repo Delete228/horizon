@@ -5488,6 +5488,8 @@ impl Game<'_> {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 0,
             pickup_delay: 0,
             bob_offset,
@@ -6761,29 +6763,17 @@ impl Game<'_> {
         }
         // ItemEntity.tick runs on a client too: gravity, collisions and
         // friction move the item between the server's updates (every 20
-        // ticks), and only the server removes it.
-        let (world, registry, facts, collision, border) = (
-            &self.world,
-            self.pack.assets.registry,
-            self.res.facts(),
-            self.collision,
-            Some(self.border.geometry()),
-        );
-        for d in self.dropped.iter_mut().filter(|_| running) {
-            super::entity::tick_item(
-                d,
-                world,
-                registry,
-                facts,
-                collision,
-                &self.res.motion().fluids,
-                false,
-                // The server decides what an item rests on; this copy only moves between updates.
-                &[],
-                border,
-            );
-        }
+        // ticks). The server normally removes it; an explicit block-contact
+        // prediction may also discard this local copy.
         head_lerps.retain(|_, (_, steps)| *steps > 0);
+        if running {
+            let mut items = std::mem::take(&mut self.dropped);
+            items.retain_mut(|item| {
+                // The server decides resting obstacles; this copy predicts blocks.
+                !self.tick_item_with_block_contacts(item, false, &[], true).1
+            });
+            self.restore_item_batch(items);
+        }
         let _ = self.handle_mob_events(mob_fx);
         for (item, ticks, at, eye, pitch, yaw) in using {
             self.remote_player_eating(&item, ticks, at, eye, pitch, yaw);

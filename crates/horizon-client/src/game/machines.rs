@@ -1527,6 +1527,8 @@ mod item_column_tests {
             on_ground: true,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,

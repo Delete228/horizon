@@ -4790,6 +4790,8 @@ fn context_test_item(at: horizon_core::geometry::Vec3) -> crate::entities::ItemE
         no_gravity: false,
         vertical_collision: false,
         horizontal_collision: false,
+        supporting_block: None,
+        on_ground_no_blocks: false,
     }
 }
 

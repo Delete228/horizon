@@ -3331,3 +3331,44 @@ at resource load and are selected by the captured entity class in normal
 movement and selection. They are not callbacks into a native mod from physics.
 Empty-context native reads retain the declared default shape. These declarations
 cannot depend on the level, neighbouring blocks, position or block-entity data.
+
+
+## Dropped-item vertical collision contact
+
+The pending `item_after_vertical_collision` fragment adds
+`native_item_after_vertical_collision(dimension, client, entity, state,
+block_pos, item_pos, stack, discard)`. This is a bounded ItemEntity movement
+extension, not a player/living fall-damage hook. It is called synchronously
+when a vertical move is clipped, after the normal collision response and before
+honey/stuck effects, bubble columns, step/inside contacts, drag, merging and
+aging. Upward clipping also notifies. `block_pos`/`state` are the normal
+`getOnPosLegacy` support sample, including supporting-block selection at edges;
+`item_pos` is the resolved position. No-physics and skipped idle moves do not
+notify. A resting item's later movement attempts may notify again (normally
+once per four ticks); this is not an enter-ground transition or an area scan.
+
+`stack` is the actual owned active item's stack: a partial transfer can leave
+its remainder there, retaining components, ID, join number and motion. Setting
+`discard` removes the current ItemEntity without loot, experience or player
+pickup effects. For trait mods, **`Flow::Cancel` means discard that item**; it
+does not cancel or undo collision response. The first discard skips later
+hooks. Normal stack mutations are shared with later hooks; an empty stack
+also discards after dispatch. The ordinary remaining movement effects still
+run; a discarded item never merges, expires, burns or reaches player pickup
+afterwards.
+
+Both logical sides run, and `client` explicitly identifies local prediction.
+A mod must decide whether to change only the authoritative server inventory or
+also predict its own client block entity. Calling a server-only Host helper on
+a client does not grant server authority. The owner holds its item batch out
+of Game during the callback, so use the supplied stack/discard handle rather
+than API42 to find/change the active item. World/block-entity Host access is
+ordinary. Drops created by a callback are retained after the active batch in
+join order and first tick on the next tick. The dispatcher does not perform
+recursive item movement or queue a later intake operation.
+
+The vanilla 26.3 restitution phase remains authoritative; older Java mod
+`updateEntityAfterFallOn` behavior can use this deliberate extension after that
+response. Players, mobs, piston-driven item moves and other entity movement
+paths are not covered. Pin the exact source target until the fragment receives
+an API number through the normal upstream process; do not invent a number.

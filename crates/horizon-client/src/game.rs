@@ -148,6 +148,9 @@ mod input_trace;
 mod integrated;
 mod interaction_shapes;
 mod interactions;
+#[cfg(test)]
+mod item_contact_tests;
+mod item_contacts;
 mod item_draw;
 #[cfg(test)]
 mod item_interact_mob_tests;
@@ -4134,6 +4137,8 @@ impl Game<'_> {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 0,
             pickup_delay: i64::from(pickup_delay),
             bob_offset: bob,
@@ -4367,17 +4372,14 @@ impl Game<'_> {
                 item.velocity.z.abs() + 1.0,
             );
             obstacles.near(item.bounds().inflate(reach), &mut nearby);
-            let alive = entity::tick_item(
-                item,
-                &self.world,
-                self.pack.assets.registry,
-                self.res.facts(),
-                self.collision,
-                &self.res.motion().fluids,
-                no_physics,
-                &nearby,
-                Some(self.border.geometry()),
-            );
+            let (alive, discarded) =
+                self.tick_item_with_block_contacts(item, no_physics, &nearby, false);
+            if discarded {
+                cells.moved(i, item.previous, item.position);
+                removed[i] = true;
+                cells.remove(i, item.position);
+                continue;
+            }
             if merging && !no_physics {
                 self.entity_powder_snow_particles(
                     item.previous,
@@ -4473,12 +4475,12 @@ impl Game<'_> {
         let mut removed = removed.into_iter();
         items.retain(|_| !removed.next().unwrap_or(false));
         let Some(p) = self.player.as_ref() else {
-            self.dropped = items;
+            self.restore_item_batch(items);
             self.spawn_destroyed_contents(destroyed);
             return;
         };
         if p.health.dead_or_dying() || self.spectator() {
-            self.dropped = items;
+            self.restore_item_batch(items);
             self.spawn_destroyed_contents(destroyed);
             return;
         }
@@ -4560,7 +4562,7 @@ impl Game<'_> {
             }
             kept.push(item);
         }
-        self.dropped = kept.into();
+        self.restore_item_batch(kept.into());
         self.spawn_destroyed_contents(destroyed);
     }
     /// `ItemUtils.onContainerDestroyed`: each stack a destroyed item held

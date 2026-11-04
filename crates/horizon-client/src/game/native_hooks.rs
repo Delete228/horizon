@@ -2043,6 +2043,38 @@ fn chars_to_type(text: &str, canceled: impl FnMut(char) -> bool) -> Option<Strin
 
 /// The hook points. Each does nothing in Horizon.
 impl Game<'_> {
+    /// An item's vertical move was clipped, after normal collision response and
+    /// before honey/stuck/bubble/step/inside, drag, merge and aging. Both sides;
+    /// `client` is prediction. The selected support state/position and item's
+    /// actual stack are supplied while the active item batch is out of Game.
+    /// Change the stack directly. Set `discard` to remove the current item
+    /// without loot/pickup; this does not cancel or undo its collision response.
+    /// The first discard stops later hooks; an empty stack also discards.
+    pub(super) fn native_item_after_vertical_collision(
+        &mut self,
+        dimension: &str,
+        client: bool,
+        entity: u32,
+        state: BlockStateId,
+        block_pos: [i32; 3],
+        item_pos: [f64; 3],
+        stack: &mut ItemStack,
+        discard: &mut bool,
+    ) {
+        mod_api::dispatch_item_after_vertical_collision(
+            self,
+            mod_api::mods(),
+            dimension,
+            client,
+            entity,
+            state,
+            block_pos,
+            item_pos,
+            stack,
+            discard,
+        );
+    }
+
     /// Declare categories for custom recipe types, with registered item icons.
     /// Asked lazily once per recipe table by `native_recipe_book_category`.
     /// Invalid declarations are logged and skipped; the first valid category

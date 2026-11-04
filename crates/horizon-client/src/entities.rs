@@ -89,6 +89,8 @@ fn slime_at(world: &World, facts: &BlockFacts, x: i32, y: i32, z: i32) -> bool {
 }
 
 mod fluids;
+#[cfg(test)]
+mod vertical_contact_tests;
 pub use fluids::update_entity_fluids;
 
 #[derive(Clone, Debug)]
@@ -127,6 +129,9 @@ pub struct ItemEntity {
     pub vertical_collision: bool,
     /// `Entity.horizontalCollision`: the last move was stopped on x or z.
     pub horizontal_collision: bool,
+    /// Transient `Entity.checkSupportingBlock` state; not part of saved item NBT.
+    pub supporting_block: Option<BlockPos>,
+    pub on_ground_no_blocks: bool,
 }
 /// Environment results needed by the entity owner, including lethal lava damage.
 #[derive(Debug)]
@@ -181,6 +186,8 @@ impl crate::entity_rules::EntityRules for ArmorStand {
 pub struct ItemStep {
     old_velocity: Vec3,
     moved: bool,
+    /// Support selected by the completed vertical collision, before block effects.
+    pub vertical_contact: Option<BlockPos>,
 }
 #[cfg(test)]
 impl ItemEntity {
@@ -364,6 +371,33 @@ impl ItemEntity {
         entity_boxes: &[Aabb],
         border: Option<&BorderGeometry>,
     ) -> ItemStep {
+        let step = self.tick_move_before_block_effects(
+            world,
+            facts,
+            collision,
+            no_physics,
+            (water_height, lava_height),
+            entity_boxes,
+            border,
+            None,
+        );
+        self.finish_move_block_effects(world, facts, step);
+        step
+    }
+    /// The movement/collision phase of `ItemEntity.tick`, before honey/stuck
+    /// effects. An owner may handle `vertical_contact` synchronously before
+    /// calling `finish_move_block_effects`, then the ordinary remaining tick.
+    pub fn tick_move_before_block_effects(
+        &mut self,
+        world: &World,
+        facts: &BlockFacts,
+        collision: &BlockCollisionRegistry<'_>,
+        no_physics: bool,
+        (water_height, lava_height): (f64, f64),
+        entity_boxes: &[Aabb],
+        border: Option<&BorderGeometry>,
+        support: Option<&horizon_world::movement_properties::BoundMovementProperties>,
+    ) -> ItemStep {
         self.ticks += 1;
         self.previous = self.position;
         if self.pickup_delay > 0 && !self.has_infinite_pickup_delay() {
@@ -447,6 +481,39 @@ impl ItemEntity {
             // `Mth.equal` on x and z (1e-5 as a float), exact on y.
             let differs = |a: f64, b: f64| (b - a).abs() >= 9.999_999_747_378_752e-6;
             self.horizontal_collision = differs(moved.x, wanted.x) || differs(moved.z, wanted.z);
+            if !no_physics && support.is_some() {
+                use horizon_world::ground_support::{GroundState, find_supporting_block};
+                let mut ground = GroundState {
+                    on_ground: self.on_ground,
+                    horizontal_collision: self.horizontal_collision,
+                    on_ground_no_blocks: self.on_ground_no_blocks,
+                    supporting_block: self.supporting_block,
+                };
+                let mut scene = SceneCollisions {
+                    world,
+                    binding: collision,
+                    subject: None,
+                };
+                ground
+                    .set_with_movement(
+                        self.on_ground,
+                        self.horizontal_collision,
+                        self.bounds(),
+                        Some(moved),
+                        |bounds| {
+                            find_supporting_block(
+                                &mut scene,
+                                self.collision_context(),
+                                self.position,
+                                bounds,
+                                1_000_000,
+                            )
+                        },
+                    )
+                    .expect("finite item support scan stays within its candidate budget");
+                self.supporting_block = ground.supporting_block;
+                self.on_ground_no_blocks = ground.on_ground_no_blocks;
+            }
             if moved.x != wanted.x {
                 self.velocity.x = 0.0;
             }
@@ -466,13 +533,12 @@ impl ItemEntity {
                     slime,
                 );
             }
-            // Entity.move -> applyEffectsFromBlocks: honey then bubble columns
-            // (before air drag), matching ItemEntity.tick.
-            self.apply_honey_slide(world, facts);
-            self.stuck = self.stuck_multiplier(world, facts).unwrap_or(Vec3::ZERO);
             return ItemStep {
                 old_velocity,
                 moved: true,
+                vertical_contact: support
+                    .filter(|_| !no_physics && moved.y != wanted.y)
+                    .map(|properties| self.legacy_support_position(world, properties)),
             };
         }
         // applyEffectsFromBlocksForLastMovements: still lift/drag while idle.
@@ -482,7 +548,46 @@ impl ItemEntity {
         ItemStep {
             old_velocity,
             moved: false,
+            vertical_contact: None,
         }
+    }
+    /// Resume the block effects inside `Entity.move` after collision response.
+    pub fn finish_move_block_effects(&mut self, world: &World, facts: &BlockFacts, step: ItemStep) {
+        if step.moved {
+            self.apply_honey_slide(world, facts);
+            self.stuck = self.stuck_multiplier(world, facts).unwrap_or(Vec3::ZERO);
+        }
+    }
+    /// `Entity.getOnPosLegacy`, with the registered movement/tag binding.
+    fn legacy_support_position(
+        &self,
+        world: &World,
+        properties: &horizon_world::movement_properties::BoundMovementProperties,
+    ) -> BlockPos {
+        use horizon_world::{
+            movement_properties::{MovementBlockProvider, RegistryMovementWorld},
+            movement_support,
+        };
+        struct Blocks<'a>(&'a World);
+        impl MovementBlockProvider for Blocks<'_> {
+            type Error = std::convert::Infallible;
+            fn movement_block_state(
+                &mut self,
+                p: BlockPos,
+            ) -> Result<horizon_world::registry::BlockStateId, Self::Error> {
+                Ok(self.0.block(p.x, p.y, p.z))
+            }
+        }
+        movement_support::support_position(
+            &mut RegistryMovementWorld {
+                properties,
+                world: &mut Blocks(world),
+            },
+            self.position,
+            self.supporting_block,
+            movement_support::LEGACY_SUPPORT_OFFSET,
+        )
+        .expect("item support belongs to the loaded movement registry")
     }
     /// The rest of `ItemEntity.tick`, after the bubble column's push: slime,
     /// drag, block contact, age. Returns false when the item should be
@@ -1946,6 +2051,8 @@ mod fire_environment_tests {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -2074,6 +2181,8 @@ mod destroyed_bundle_environment_tests {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -2176,6 +2285,8 @@ mod merge_tests {
             on_ground: true,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -2600,6 +2711,8 @@ mod honey_slide_tests {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 10,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -2749,6 +2862,8 @@ mod slime_bounce_tests {
             on_ground: true,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 10,
             pickup_delay: 0,
             bob_offset: 0.0,
@@ -3450,6 +3565,8 @@ mod item_destroyed_tests {
             on_ground: false,
             vertical_collision: false,
             horizontal_collision: false,
+            supporting_block: None,
+            on_ground_no_blocks: false,
             age: 0,
             pickup_delay: 0,
             bob_offset: 0.0,

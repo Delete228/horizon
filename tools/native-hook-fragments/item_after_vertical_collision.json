@@ -1,0 +1,10 @@
+{
+  "hooks": [{
+    "name": "item_after_vertical_collision",
+    "target": "horizon_client::game::native_hooks::Game<'_>::native_item_after_vertical_collision",
+    "side": "both",
+    "mod_api": {"contract": "cancel", "out": "discard"}
+  }],
+  "rust_summary": "an owned item callback after a clipped vertical move, before block effects.",
+  "doc_summary": "`native_item_after_vertical_collision(dimension, client, entity, state, block_pos, item_pos, stack, discard)` runs synchronously after a dropped item's vertical move was clipped and normal collision response completed, before block effects/drag/merge/aging. `stack` is the actual active entity's stack. Set `discard` (trait `Flow::Cancel`) to discard that item, not undo/cancel its completed collision; later hooks are skipped. Empty stacks also discard. Both sides run; `client` identifies prediction. No-physics and idle skipped moves do not notify, but later grounded movement attempts can notify again. Bundles need \"hooks\": @API:item_after_vertical_collision@."
+}
