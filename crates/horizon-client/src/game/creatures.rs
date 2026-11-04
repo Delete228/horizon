@@ -5303,11 +5303,10 @@ impl Game<'_> {
         };
         self.audio.play(sound, Some(at), 1.0, 1.0);
     }
-    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
-    /// crosshair or on the one a guest's interact packet named: returns true
-    /// when consumed.
-    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
-        let Some((index, distance)) = (match target {
+    /// The mob a normal interaction can reach: a packet's exact validated ID,
+    /// or the crosshair's mob before its blocking shape.
+    pub(super) fn mob_interaction_target(&self, target: Option<InteractTarget>) -> Option<usize> {
+        let (index, distance) = (match target {
             // The id the packet named, under the filters the crosshair pick
             // applies (`mob_hit`): a mob in its death animation is not clicked
             // by either path, so naming one in a packet must not reach the
@@ -5319,9 +5318,7 @@ impl Game<'_> {
                 })
                 .map(|i| (i, 0.0)),
             None => self.mob_hit(),
-        }) else {
-            return Ok(false);
-        };
+        })?;
         // Only a client's own pick is stopped by a block: the range check passed.
         if target.is_none()
             && let Some(hit) = self.pick_unfiltered()
@@ -5332,9 +5329,18 @@ impl Game<'_> {
                 + (hit.point[2] - eye[2]).powi(2))
             .sqrt();
             if d < distance {
-                return Ok(false);
+                return None;
             }
         }
+        Some(index)
+    }
+    /// Right click on a mob (Mob.interact / mobInteract), on the mob under the
+    /// crosshair or on the one a guest's interact packet named: returns true
+    /// when consumed.
+    pub(super) fn interact_mob(&mut self, target: Option<InteractTarget>) -> Result<bool> {
+        let Some(index) = self.mob_interaction_target(target) else {
+            return Ok(false);
+        };
         if self.name_mob(index) {
             return Ok(true);
         }
