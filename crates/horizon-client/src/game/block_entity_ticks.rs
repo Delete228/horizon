@@ -26,6 +26,8 @@ impl Game<'_> {
             self.world.block_entities.set_states(states);
             let containers = self.native_containers();
             self.world.block_entities.set_mod_containers(containers);
+            let custom_fluids = self.native_custom_fluid_states();
+            self.world.block_entities.set_custom_fluids(custom_fluids);
             let fluids = self.native_fluid_tables();
             self.world.block_entities.set_mod_fluids(fluids);
             let energy = self.native_energy_tables();

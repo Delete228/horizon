@@ -1216,6 +1216,7 @@ struct Opening {
 pub(super) enum ComponentHarness {
     Dispenser(String),
     Sculk(String),
+    NativeFluids(String),
 }
 
 impl Game<'_> {
@@ -1232,6 +1233,9 @@ impl Game<'_> {
                     match fixture {
                         ComponentHarness::Dispenser(spec) => server.dispense_fixture(&spec),
                         ComponentHarness::Sculk(spec) => server.sculk_fixture(&spec),
+                        ComponentHarness::NativeFluids(output) => {
+                            server.native_fluid_fixture(&output)
+                        }
                     }
                 };
                 run().map_err(|e| e.to_string())
