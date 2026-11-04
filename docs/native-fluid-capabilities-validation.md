@@ -77,8 +77,22 @@ storage regressions 10 passed; the final strengthened real-Game fixture
 9 groups passed with executable SHA-256
 `2b6395c9d4ce4104fd62b53181b6dc5be68d15d960e8a69319507b1d24e85861`;
 workspace/server Clippy, formatting and the public-tree check passed.
-The complete `pr_ready --quick` report is still running; it is not claimed as
-a pass. No visual or Java parity claim applies to this generic extension.
+
+The complete `pr_ready --quick` run finished in 47 minutes 43 seconds:
+3,828 touched-crate tests, documentation checks, launcher formatting/Clippy
+and 473 launcher tests passed. Its initial Python run reported three failures
+among 634 tests (one skipped). Two were the new driver's isolation conventions:
+it already used `integration_env`, but the repository guard requires the visible
+`game_env` name and forbids redundant manual audio flags. The driver now uses
+that name and the five `test_game_home` checks pass after the correction.
+
+The remaining installer-signature test builds only a fake Linux archive but the
+Darwin installer requests a macOS archive. The same twelve shell subcases fail
+when all three installer/signature files are taken unchanged from base
+`08821fdbce6b5d081f1e6cc5c4d0da5438861222` and run in an independent private
+directory. This change does not edit those files. The complete aggregate check
+is therefore not claimed as a pass. The quick run lists parity jobs instead of
+running them. No visual or Java parity claim applies to this generic extension.
 
 ## Limits
 

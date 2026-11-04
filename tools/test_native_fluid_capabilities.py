@@ -15,9 +15,9 @@ import subprocess
 import tempfile
 
 try:
-    from .integration_env import game_environment
+    from .integration_env import game_environment as game_env
 except ImportError:
-    from integration_env import game_environment
+    from integration_env import game_environment as game_env
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -34,9 +34,8 @@ def run(game, resources, scratch=None):
         scratch.mkdir(parents=True, exist_ok=False)
     private_resources = scratch / 'resources'
     shutil.copytree(resources, private_resources)
-    env = game_environment(os.environ, scratch)
-    env.update(HORIZON_NATIVE_FLUID_FIXTURE=str(scratch / 'fixture-result.json'),
-               HORIZON_NO_AUDIO='1', HORIZON_LAUNCHER_NO_SELF_UPDATE='1')
+    env = game_env(os.environ, scratch)
+    env.update(HORIZON_NATIVE_FLUID_FIXTURE=str(scratch / 'fixture-result.json'))
     for key, folder in [('HORIZON_LAUNCHER_TRASH', 'trash'),
                         ('HORIZON_LAUNCHER_CLIPBOARD', 'clipboard'),
                         ('HORIZON_LAUNCHER_DESKTOP', 'desktop')]:
