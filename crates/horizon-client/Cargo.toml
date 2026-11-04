@@ -153,6 +153,7 @@ horizon-mod-api-gen = { path = "../horizon-mod-api-gen" }
 workspace = true
 
 [dev-dependencies]
+syn = { version = "2", features = ["full", "visit"] }
 horizon-client-render = { path = "../horizon-client-render", features = ["test-support"] }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).

@@ -10816,6 +10816,106 @@ mod tests {
         }
     }
 
+    fn inherent_hook_names(source: &str, owner: &str) -> std::collections::BTreeSet<String> {
+        use syn::visit::Visit;
+        // Native helpers share the prefix; an actual hook calls its matching
+        // generated dispatcher. Inspect syntax, not comments/string literals.
+        struct Dispatcher {
+            name: String,
+            found: bool,
+        }
+        impl<'ast> Visit<'ast> for Dispatcher {
+            fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+                if let syn::Expr::Path(path) = &*call.func
+                    && path.qself.is_none()
+                    && path.path.segments.len() == 2
+                    && path.path.segments[0].ident == "mod_api"
+                    && path.path.segments[1].ident == self.name
+                {
+                    self.found = true;
+                }
+                syn::visit::visit_expr_call(self, call);
+            }
+        }
+        syn::parse_file(source)
+            .expect("native hook source parses")
+            .items
+            .into_iter()
+            .filter_map(|item| match item {
+                syn::Item::Impl(item)
+                    if item.trait_.is_none()
+                        && matches!(&*item.self_ty, syn::Type::Path(ty)
+                            if ty.qself.is_none() && ty.path.segments.len() == 1
+                                && ty.path.segments[0].ident == owner) =>
+                {
+                    Some(item.items)
+                }
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|item| match item {
+                syn::ImplItem::Fn(method)
+                    if matches!(&method.vis, syn::Visibility::Restricted(vis)
+                        if vis.path.is_ident("super")) =>
+                {
+                    let method_name = method.sig.ident.to_string();
+                    let name = method_name.strip_prefix("native_")?;
+                    let mut dispatcher = Dispatcher {
+                        name: format!("dispatch_{name}"),
+                        found: false,
+                    };
+                    dispatcher.visit_block(&method.block);
+                    dispatcher.found.then(|| name.to_owned())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hook_owner_scan_covers_multiple_and_multiline_impls() {
+        let source = r#"
+            impl GameLevel<'_> {
+                pub(super) fn native_first(&mut self) { mod_api::dispatch_first(); }
+                pub fn native_helper(&self) { mod_api::dispatch_helper(); }
+                fn native_private(&self) { mod_api::dispatch_private(); }
+                pub(super) fn native_helper_with_prefix(&self) {
+                    let _ = "mod_api::dispatch_helper_with_prefix()";
+                }
+                pub(super) fn native_wrong(&self) { mod_api::dispatch_other(); }
+                fn ordinary(&self) {}
+            }
+            impl Game<'_> {
+                pub(super) fn native_game(&mut self) { mod_api::dispatch_game(); }
+            }
+            // impl GameLevel<'_> { fn native_comment() {} }
+            impl<'world>
+                GameLevel<'world>
+            {
+                pub(super) fn
+                    native_second(&mut self)
+                {
+                    let _ = "fn native_string() {}";
+                    mod_api::dispatch_second();
+                }
+            }
+            impl Other for GameLevel<'_> {
+                fn native_trait(&self) { mod_api::dispatch_trait(); }
+            }
+            impl Other {
+                pub(super) fn native_other(&self) { mod_api::dispatch_other(); }
+            }
+        "#;
+        assert_eq!(
+            inherent_hook_names(source, "GameLevel"),
+            ["first".to_owned(), "second".to_owned()].into()
+        );
+        assert_eq!(
+            inherent_hook_names(source, "Game"),
+            ["game".to_owned()].into()
+        );
+    }
+
     #[test]
     fn catalog_matches_hook_points() {
         use std::collections::BTreeSet;
@@ -10846,22 +10946,7 @@ mod tests {
             .split("/// Server-level helpers for native mods.")
             .next()
             .unwrap();
-        let level_section = source
-            .split("impl GameLevel<'_> {")
-            .nth(1)
-            .unwrap()
-            .split("\n}")
-            .next()
-            .unwrap();
-        let level_hooks: BTreeSet<_> = level_section
-            .lines()
-            .filter_map(|line| {
-                line.trim()
-                    .strip_prefix("pub(super) fn native_")?
-                    .split('(')
-                    .next()
-            })
-            .collect();
+        let level_hooks = inherent_hook_names(source, "GameLevel");
         // Hook points that are free functions in other crates.
         let free_hooks = |source: &'static str| -> BTreeSet<&'static str> {
             source
@@ -10890,13 +10975,13 @@ mod tests {
         let chat_hooks = free_hooks(include_str!("../lan/hub/chat.rs"));
         let declared: BTreeSet<_> = section
             .lines()
-            .chain(level_section.lines())
             .filter_map(|line| {
                 line.trim()
                     .strip_prefix("pub(super) fn native_")?
                     .split('(')
                     .next()
             })
+            .chain(level_hooks.iter().map(String::as_str))
             .chain(render_hooks.iter().copied())
             .chain(item_hooks.iter().copied())
             .chain(loot_hooks.iter().copied())
