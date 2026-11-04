@@ -153,6 +153,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
             let context = CollisionContext::for_entity(
                 CollisionEntity {
                     identity: EntityIdentity(1),
+                    kind: horizon_world::collision_context::EntityContextKind::Other,
                     y: position.y,
                     descending: false,
                     main_hand: None,

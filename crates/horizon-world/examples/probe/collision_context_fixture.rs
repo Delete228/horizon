@@ -242,6 +242,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         let f: Value = serde_json::from_str(line)?;
         let player = CollisionEntity {
             identity: EntityIdentity(1),
+            kind: horizon_world::collision_context::EntityContextKind::Player,
             y: number(&f["y"]),
             descending: f["descending"].as_bool().unwrap(),
             main_hand: Some(CollisionItem {
@@ -251,11 +252,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         let marker = CollisionEntity {
             identity: EntityIdentity(2),
+            kind: horizon_world::collision_context::EntityContextKind::Other,
             main_hand: None,
             ..player
         };
         let falling = CollisionEntity {
             identity: EntityIdentity(3),
+            kind: horizon_world::collision_context::EntityContextKind::Other,
             ..marker
         };
         let always = f["always"].as_bool().unwrap();

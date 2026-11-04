@@ -1,5 +1,6 @@
 use super::*;
 use crate::{assets::Assets, blocks::BlockFacts, items::Items};
+use std::sync::Arc;
 
 #[test]
 fn renames_ids_keys_and_states() {
@@ -4268,4 +4269,321 @@ fn a_symlink_file_is_copied_through() {
     assert!(!fs::symlink_metadata(&at).unwrap().file_type().is_symlink());
     assert_eq!(fs::read(&at).unwrap(), b"real");
     let _ = fs::remove_dir_all(&scratch);
+}
+
+/// Exercise the real content compiler and checked immutable collision import together.
+fn context_fixture(
+    tag: &str,
+    declaration: &str,
+) -> (PathBuf, horizon_world::registry::BlockRegistry, Tag) {
+    let (base, mods) = block_base(tag, &[declaration]);
+    let plan = Plan::new(&base, &mods).unwrap();
+    let mut gameplay: J = read_json(&base.join("gameplay-facts.json")).unwrap();
+    plan.json("gameplay-facts.json", &mut gameplay).unwrap();
+    if let Some(J::Arr(rows)) = gameplay.at("states") {
+        for (index, row) in rows.iter_mut().enumerate() {
+            row.set("id", J::Num((index as u64).into()));
+        }
+    }
+    fs::write(
+        base.join("gameplay-facts.json"),
+        serde_json::to_vec(&gameplay).unwrap(),
+    )
+    .unwrap();
+    let mut table = Tag::compound([
+        ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+        (
+            "states",
+            Tag::List(vec![test_state_row("x"), test_state_row("y")]),
+        ),
+        (
+            "shapes",
+            Tag::List(vec![encode_shape(&VoxelShape::empty())]),
+        ),
+        ("cached_shapes", Tag::IntArray(vec![0, 0])),
+    ]);
+    plan.nbt(&mut table);
+    plan.collision_shapes(&mut table).unwrap();
+    let registry = horizon_world::registry::BlockRegistry::from_nbt(&Tag::compound([
+        ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+        ("states", table.get("states").unwrap().clone()),
+        (
+            "defaults",
+            Tag::compound([
+                ("minecraft:test", Tag::Int(0)),
+                ("testmod:test", Tag::Int(2)),
+            ]),
+        ),
+    ]))
+    .unwrap();
+    (base, registry, table)
+}
+
+#[test]
+fn context_shapes_compile_state_tuples_without_cross_channel_inheritance() {
+    use horizon_world::{
+        collision::CachedCollisionRegistry, collision_context::EntityContextKind as K,
+        registry::BlockStateId,
+    };
+    let (base, registry, table) = context_fixture(
+        "context-tuples",
+        r#"{
+      "template":"minecraft:test","item":false,
+      "state_properties":{"active":{"type":"boolean"}},
+      "shapes":{"default":[[0,0,0,1,0.125,1]]},
+      "collision_shapes":{"default":[]},
+      "outline_context_shapes":{"player":{"properties":["axis","active"],"values":{"x,true":[[0,0.125,0,1,1,1]]},"default":[]}},
+      "collision_context_shapes":{"item":{"properties":["active","axis"],"values":{"true,x":[[0,0,0,1,1.5,1]]},"default":[]}},
+      "interaction_shapes":{"default":[[0,0,0,1,1,1]]}}"#,
+    );
+    let cached = CachedCollisionRegistry::from_nbt(&table, &registry).unwrap();
+    let mut special = 0;
+    for index in 2..registry.len() {
+        let id = BlockStateId(index as u32);
+        let state = registry.state(id).unwrap();
+        let expected = state.properties["axis"] == "x" && state.properties["active"] == "true";
+        special += usize::from(expected);
+        let outline = cached.context_outline_shape(id, K::Player).unwrap();
+        assert_eq!(outline.is_empty(), !expected);
+        assert_eq!(
+            cached
+                .context_collision_shape(id, K::Item)
+                .unwrap()
+                .is_empty(),
+            !expected
+        );
+        assert!(cached.cached_shape(id).unwrap().unwrap().is_empty());
+        assert!(cached.context_collision_shape(id, K::Player).is_none());
+        for kind in [K::Item, K::Living, K::Other, K::None] {
+            assert!(cached.context_outline_shape(id, kind).is_none());
+        }
+        if expected {
+            assert_eq!(outline.min(Axis::Y), 0.125);
+            assert_eq!(
+                cached.context_outline_edges(id, K::Player).unwrap().len(),
+                12
+            );
+        }
+        assert_eq!(cached.interaction_shape(id).unwrap().max(Axis::Y), 1.0);
+    }
+    assert_eq!(special, 1);
+    let binding =
+        horizon_world::block_collision::BlockCollisionRegistry::new(Arc::new(cached)).unwrap();
+    for index in 2..registry.len() {
+        let id = BlockStateId(index as u32);
+        let s = registry.state(id).unwrap();
+        let expected = s.properties["axis"] == "x" && s.properties["active"] == "true";
+        assert_eq!(binding.may_collide(id), expected);
+        assert_eq!(binding.reaches_out(id), expected);
+    }
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
+}
+
+fn context_test_item(at: horizon_core::geometry::Vec3) -> crate::entities::ItemEntity {
+    crate::entities::ItemEntity {
+        join: Default::default(),
+        id: 17,
+        thrower: None,
+        target: None,
+        stack: crate::items::ItemStack {
+            item: Arc::from("minecraft:test"),
+            count: 1,
+            damage: 0,
+            extra: None,
+        },
+        health: 5,
+        fire_ticks: 0,
+        position: at,
+        previous: at,
+        velocity: horizon_core::geometry::Vec3::ZERO,
+        on_ground: false,
+        age: 0,
+        pickup_delay: 0,
+        bob_offset: 0.0,
+        ticks: 0,
+        needs_sync: false,
+        stuck: horizon_core::geometry::Vec3::ZERO,
+        no_gravity: false,
+        vertical_collision: false,
+        horizontal_collision: false,
+    }
+}
+
+#[test]
+fn actual_item_move_and_overlap_use_item_floor_and_lowered_rim() {
+    use crate::{collisions::SceneCollisions, world::World};
+    use horizon_core::geometry::Vec3;
+    use horizon_world::{collision::CachedCollisionRegistry, registry::BlockStateId};
+    // A bowl's ordinary floor is2px, item floor5px; ordinary rim16px, item rim13px.
+    // Five independently specified boxes per shape, not derived from the selector.
+    let (base, _registry, mut table) = context_fixture(
+        "item-bowl",
+        r#"{
+      "template":"minecraft:test","item":false,
+      "collision_shapes":{"default":[[0.125,0,0.125,0.875,0.125,0.875],[0,0.125,0,1,1,0.125],[0,0.125,0.875,1,1,1],[0,0.125,0.125,0.125,1,0.875],[0.875,0.125,0.125,1,1,0.875]]},
+      "collision_context_shapes":{"item":{"default":[[0.125,0,0.125,0.875,0.125,0.875],[0,0.125,0,1,0.3125,1],[0,0.3125,0,1,0.8125,0.125],[0,0.3125,0.875,1,0.8125,1],[0,0.3125,0.125,0.125,0.8125,0.875],[0.875,0.3125,0.125,1,0.8125,0.875]]}}}"#,
+    );
+    // ItemEntity's ordinary physics uses a real air state as well as the
+    // independently compiled bowl. Keep it outside the two template tuples.
+    let Tag::List(states) = table.get_mut("states").unwrap() else {
+        unreachable!()
+    };
+    states.push(Tag::compound([("id", Tag::String("minecraft:air".into()))]));
+    let Tag::IntArray(ids) = table.get_mut("cached_shapes").unwrap() else {
+        unreachable!()
+    };
+    ids.push(0);
+    let registry = horizon_world::registry::BlockRegistry::from_nbt(&Tag::compound([
+        ("DataVersion", Tag::Int(horizon_world::DATA_VERSION)),
+        ("states", table.get("states").unwrap().clone()),
+        (
+            "defaults",
+            Tag::compound([
+                ("minecraft:test", Tag::Int(0)),
+                ("testmod:test", Tag::Int(2)),
+                ("minecraft:air", Tag::Int(4)),
+            ]),
+        ),
+    ]))
+    .unwrap();
+    let mut gameplay: serde_json::Value =
+        serde_json::from_slice(&fs::read(base.join("gameplay-facts.json")).unwrap()).unwrap();
+    gameplay["states"]
+        .as_array_mut()
+        .unwrap()
+        .push(serde_json::json!({"id":4}));
+    fs::write(
+        base.join("gameplay-facts.json"),
+        serde_json::to_vec(&gameplay).unwrap(),
+    )
+    .unwrap();
+    let cached = CachedCollisionRegistry::from_nbt(&table, &registry).unwrap();
+    let collision =
+        horizon_world::block_collision::BlockCollisionRegistry::new(Arc::new(cached)).unwrap();
+    let facts = BlockFacts::load_with_behaviour_json(
+        &base,
+        &registry,
+        &serde_json::json!({"states":[{},{},{},{},{}],"blocks":[{"name":"minecraft:test","class":["Block"]},{"name":"testmod:test","class":["Block"]},{"name":"minecraft:air","class":["AirBlock","Block"]}]}),
+    )
+    .unwrap();
+    let mut world = World::new(BlockStateId(4), 0);
+    world
+        .chunks
+        .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+    world.set(8, 8, 8, BlockStateId(2)).unwrap();
+    let mut item = context_test_item(Vec3::new(8.5, 10.0, 8.5));
+    let ordinary = SceneCollisions {
+        world: &world,
+        binding: &collision,
+        subject: None,
+    }
+    .resolve(item.bounds(), Vec3::new(0.0, -3.0, 0.0), 0.0, false)
+    .unwrap();
+    assert_eq!(item.position.y + ordinary.y, 8.125);
+    for _ in 0..100 {
+        let no_physics = item.inside_block(&world, &collision);
+        assert!(
+            !no_physics,
+            "an item resting on its floor must not be pushed out"
+        );
+        item.tick_move(
+            &world,
+            &facts,
+            &collision,
+            no_physics,
+            (0.0, 0.0),
+            &[],
+            None,
+        );
+    }
+    assert_eq!(item.position.y, 8.3125);
+    assert!(item.on_ground);
+    item.position = Vec3::new(8.5, 8.14, 8.5);
+    assert!(
+        item.inside_block(&world, &collision),
+        "item's taller floor participates in noCollision(this, bounds)"
+    );
+    item.position = Vec3::new(8.05, 8.83, 8.5);
+    assert!(
+        !item.inside_block(&world, &collision),
+        "above lowered item rim is free"
+    );
+    let mut scene = SceneCollisions {
+        world: &world,
+        binding: &collision,
+        subject: None,
+    };
+    assert!(
+        !crate::collisions::no_collision_empty(&mut scene, item.bounds()),
+        "empty context retains full-height rim"
+    );
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn item_variant_outside_cell_survives_empty_default_and_outer_section_shortcuts() {
+    use crate::{collisions::SceneCollisions, world::World};
+    use horizon_core::geometry::Vec3;
+    use horizon_world::{collision::CachedCollisionRegistry, registry::BlockStateId};
+    let (base, registry, table) = context_fixture(
+        "item-large",
+        r#"{"template":"minecraft:test","item":false,"collision_shapes":{"default":[]},"collision_context_shapes":{"item":{"default":[[0,0,0,1,1.5,1]]}}}"#,
+    );
+    let cached = CachedCollisionRegistry::from_nbt(&table, &registry).unwrap();
+    let collision =
+        horizon_world::block_collision::BlockCollisionRegistry::new(Arc::new(cached)).unwrap();
+    let mut world = World::new(BlockStateId(0), 0);
+    world
+        .chunks
+        .insert((0, 0), Arc::new(crate::chunk::Chunk::empty(0, 0)));
+    // y15 crosses a section boundary: the query's containing section has only air.
+    world.set(8, 15, 8, BlockStateId(2)).unwrap();
+    let item = context_test_item(Vec3::new(8.5, 16.25, 8.5));
+    let mut scene = SceneCollisions {
+        world: &world,
+        binding: &collision,
+        subject: None,
+    };
+    assert!(!scene.cells_without_collision(item.bounds()));
+    assert!(crate::collisions::no_collision_empty(
+        &mut scene,
+        item.bounds()
+    ));
+    assert!(item.inside_block(&world, &collision));
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
+}
+
+#[test]
+fn context_shape_import_rejects_stale_or_corrupt_variant_references() {
+    use horizon_world::collision::CachedCollisionRegistry;
+    let (base, registry, table) = context_fixture(
+        "invalid-context",
+        r#"{"template":"minecraft:test","item":false,"collision_context_shapes":{"item":{"default":[[0,0,0,1,1,1]]}}}"#,
+    );
+    for replacement in [
+        Tag::compound([("state", Tag::Int(-1)), ("collision_item", Tag::Int(0))]),
+        Tag::compound([("state", Tag::Int(4)), ("collision_item", Tag::Int(0))]),
+        Tag::compound([("state", Tag::Int(2)), ("collision_item", Tag::Int(-1))]),
+        Tag::compound([
+            ("state", Tag::Int(2)),
+            ("collision_item", Tag::Int(i32::MAX)),
+        ]),
+        Tag::compound([
+            ("state", Tag::Int(2)),
+            ("collision_item", Tag::String("0".into())),
+        ]),
+        Tag::compound([("state", Tag::Int(2)), ("collision_none", Tag::Int(0))]),
+        Tag::compound([("state", Tag::Int(2))]),
+    ] {
+        let mut broken = table.clone();
+        *broken.get_mut("context_shapes").unwrap() = Tag::List(vec![replacement]);
+        assert!(CachedCollisionRegistry::from_nbt(&broken, &registry).is_err());
+    }
+    let mut duplicate = table.clone();
+    let Tag::List(rows) = duplicate.get_mut("context_shapes").unwrap() else {
+        unreachable!()
+    };
+    rows[1] = rows[0].clone();
+    assert!(CachedCollisionRegistry::from_nbt(&duplicate, &registry).is_err());
+    fs::remove_dir_all(base.parent().unwrap()).unwrap();
 }

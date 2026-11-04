@@ -87,9 +87,19 @@ impl Game<'_> {
                 [0.0; 3]
             };
             let origin = pos.map(f64::from);
-            let box_shape = self.context_outline(pos, state);
+            let custom = self
+                .collision
+                .cached_shapes()
+                .context_outline_edges(state, self.outline_context_kind());
+            let box_shape = if custom.is_none() {
+                self.context_outline(pos, state)
+            } else {
+                None
+            };
             let cube = horizon_client::blocks::cube_edges();
-            let segments = if box_shape.is_some() {
+            let segments = if let Some(edges) = custom {
+                edges
+            } else if box_shape.is_some() {
                 cube.as_slice()
             } else {
                 facts.outline_edges.as_ref()
