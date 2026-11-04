@@ -2775,6 +2775,13 @@ impl Game<'_> {
     pub(super) fn native_standalone_models(models: &mut Vec<String>) {
         mod_api::dispatch_standalone_models(mod_api::mods(), models);
     }
+    /// Explicit block-sheet sprites that no model names (for native UV shifts).
+    /// Asked once beside standalone models, before resources load. Every client
+    /// resource load/reload decodes them again; missing/invalid textures remain
+    /// absent instead of substituting a different sprite. API @API:terrain_model@.
+    pub(super) fn native_terrain_model_sprites(sprites: &mut Vec<String>) {
+        mod_api::dispatch_terrain_model_sprites(mod_api::mods(), sprites);
+    }
     /// Options > Mods lists the native mods: push yours.
     pub(super) fn native_mods(&mut self, mods: &mut Vec<NativeMod>) {
         mod_api::dispatch_mods(self, mod_api::mods(), mods);

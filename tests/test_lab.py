@@ -186,6 +186,19 @@ class PublicationTests(unittest.TestCase):
         for path in ["tools/Minecraft.java", "tests/java/Client.java", ".local/tools/JfrSummary.java"]:
             self.assertTrue(check_public_tree.prohibited(path), path)
 
+    def test_only_exact_authored_render_collectors_are_allowed(self):
+        for path in [
+            "tools/java/NativeFluidRenderOracle.java",
+            "tools/java/native-fluid-fixtures/net/createmod/catnip/platform/CatnipServices.java",
+            "tools/java/NativeTerrainModelOracle.java",
+        ]:
+            self.assertFalse(check_public_tree.prohibited(path), path)
+            self.assertTrue(check_public_tree.prohibited(".local/" + path), path)
+            self.assertTrue(check_public_tree.prohibited(path.replace(".java", ".class")), path)
+        for path in ["tools/java/FaceBakery.java", "tools/java/NativeTerrainModelOracleCopy.java",
+                     "tools/java/native-fluid-fixtures/net/minecraft/FluidRenderHelper.java"]:
+            self.assertTrue(check_public_tree.prohibited(path), path)
+
     def test_force_added_ignored_file_is_detected_in_index_and_history(self):
         with tempfile.TemporaryDirectory() as temp:
             directory = Path(temp)
